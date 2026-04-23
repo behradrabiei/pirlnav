@@ -1,0 +1,40 @@
+BASE_TASK_CONFIG_PATH: "configs/tasks/objectnav_mp3d.yaml"
+CMD_TRAILING_OPTS: ["TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS", "50000"]
+ENV_NAME: "SimpleRLEnv"
+SIMULATOR_GPU_ID: 0
+TORCH_GPU_ID: 0
+VIDEO_OPTION: []
+TENSORBOARD_DIR: "tb_dinov2"
+VIDEO_DIR: "video_dir"
+TEST_EPISODE_COUNT: -1
+EVAL_CKPT_PATH_DIR: "data/new_checkpoints_dinov2"
+NUM_ENVIRONMENTS: 4
+CHECKPOINT_FOLDER: "data/new_checkpoints_dinov2"
+TRAINER_NAME: "pirlnav-il"
+SENSORS: ["RGB_SENSOR"]
+NUM_UPDATES: 20000
+LOG_INTERVAL: 10
+NUM_CHECKPOINTS: 10
+FORCE_TORCH_SINGLE_THREADED: True
+
+EVAL:
+  SPLIT: "train"
+
+IL:
+  POLICY:
+    name: "ObjectNavILMAEPolicy"
+
+RL:
+  SUCCESS_REWARD: 2.5
+  SLACK_REWARD: -1e-3
+
+POLICY:
+  CRITIC:
+    no_critic: True
+  RGB_ENCODER:
+    backbone: "dinov2_base"
+    pretrained_encoder: null
+    dinov2_model_name: "facebook/dinov2-base"
+    dinov2_resize_h: 476
+    dinov2_resize_w: 630
+    dinov2_output_dim: 768
