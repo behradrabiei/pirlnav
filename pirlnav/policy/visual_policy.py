@@ -141,6 +141,27 @@ class ObjectNavILMAENet(Net):
             rnn_input_size += 32
             logger.info("\n\nSetting up Object Goal sensor")
 
+        # Optional 12-bin goal-direction compass (oracle feature from
+        # GoalCompassSensor).  Auto-activates iff the sensor is listed in
+        # TASK.SENSORS so the observation-space carries a "goal_compass" key.
+        self._goal_compass_uuid = "goal_compass"
+        if self._goal_compass_uuid in observation_space.spaces:
+            gc_input_dim = observation_space.spaces[
+                self._goal_compass_uuid
+            ].shape[0]
+            gc_cfg = getattr(policy_config, "GOAL_COMPASS_ENCODER", None)
+            gc_embed_dim = (
+                int(gc_cfg.embedding_size) if gc_cfg is not None else 32
+            )
+            self.goal_compass_embedding_dim = gc_embed_dim
+            self.goal_compass_embedding = nn.Linear(gc_input_dim, gc_embed_dim)
+            rnn_input_size += gc_embed_dim
+            logger.info(
+                "\n\nSetting up Goal Compass sensor ({} bins -> {} dim)".format(
+                    gc_input_dim, gc_embed_dim
+                )
+            )
+
         if policy_config.SEQ2SEQ.use_prev_action:
             self.prev_action_embedding = nn.Embedding(num_actions + 1, 32)
             rnn_input_size += self.prev_action_embedding.embedding_dim
@@ -258,6 +279,15 @@ class ObjectNavILMAENet(Net):
                     -1, object_goal.size(2)
                 )
             x.append(self.obj_categories_embedding(object_goal).squeeze(dim=1))
+
+        if (
+            self._goal_compass_uuid in observations
+            and hasattr(self, "goal_compass_embedding")
+        ):
+            obs_gc = observations[self._goal_compass_uuid]
+            if obs_gc.dim() == 3:
+                obs_gc = obs_gc.contiguous().view(-1, obs_gc.size(2))
+            x.append(self.goal_compass_embedding(obs_gc.float()))
 
         if self.policy_config.SEQ2SEQ.use_prev_action:
             prev_actions_embedding = self.prev_action_embedding(

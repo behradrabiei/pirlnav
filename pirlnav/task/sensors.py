@@ -3,6 +3,7 @@ from collections import OrderedDict
 from typing import Any, Dict, Optional
 
 import numpy as np
+import quaternion  # noqa: F401  (registers np.quaternion dtype)
 import torch
 from gym import spaces
 from habitat import logger
@@ -175,6 +176,95 @@ class CachedDINOv2Sensor(Sensor):
 
     def get_observation(self, **kwargs):
         return self._get_observation(**kwargs)
+
+
+@registry.register_sensor(name="GoalCompassSensor")
+class GoalCompassSensor(Sensor):
+    r"""Oracle 12-bin goal-direction compass feature.
+
+    Mirrors the algorithm in ``global_test.py::compute_compass_feature``:
+    for each goal instance in ``episode.goals``, computes a ground-plane
+    bearing from the agent's forward direction, and adds a rectified,
+    distance-weighted cosine contribution to each of ``NUM_BINS`` bins spaced
+    uniformly around the agent.
+
+        score_i += max(0, cos(bin_i - bearing)) / (1 + distance)
+
+    Bin 0 points along agent-forward; bin index increases counterclockwise
+    (agent's left, viewed from above). All math is done on the world x-z
+    ground plane using Habitat's ``[0, 0, -1]`` forward convention.
+
+    Requires access to the simulator (for agent pose) and the episode (for
+    goal positions), so it is only available where ``episode.goals`` is
+    populated (true for ObjectNav-v2 train/val/eval replays).
+    """
+
+    cls_uuid: str = "goal_compass"
+
+    def __init__(self, sim, config: Config, *args: Any, **kwargs: Any):
+        self._sim = sim
+        self._n_bins = int(getattr(config, "NUM_BINS", 12))
+        self._bin_angles = (
+            np.arange(self._n_bins, dtype=np.float32)
+            * (2.0 * np.pi / self._n_bins)
+        )
+        self._forward_local = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+
+        self.uuid = self.cls_uuid
+        self.observation_space = spaces.Box(
+            low=0.0,
+            high=np.inf,
+            shape=(self._n_bins,),
+            dtype=np.float32,
+        )
+
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return self.uuid
+
+    def get_observation(
+        self,
+        observations: Dict[str, Observations],
+        episode,
+        *args: Any,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        agent_state = self._sim.get_agent_state()
+        agent_pos = np.asarray(agent_state.position, dtype=np.float64)
+        agent_rot = agent_state.rotation
+
+        R = quaternion.as_rotation_matrix(agent_rot)
+        fwd_world = R @ self._forward_local
+        fwd_xz = np.array([fwd_world[0], fwd_world[2]], dtype=np.float64)
+        fwd_norm = np.linalg.norm(fwd_xz)
+        if fwd_norm < 1e-9:
+            # Looking straight up/down -> no meaningful ground heading.
+            return np.zeros(self._n_bins, dtype=np.float32)
+        fwd_xz /= fwd_norm
+
+        goals = getattr(episode, "goals", None) or []
+        compass = np.zeros(self._n_bins, dtype=np.float32)
+        for goal in goals:
+            goal_pos = np.asarray(goal.position, dtype=np.float64)
+            delta_xz = np.array(
+                [goal_pos[0] - agent_pos[0], goal_pos[2] - agent_pos[2]],
+                dtype=np.float64,
+            )
+            d = float(np.linalg.norm(delta_xz))
+            if d < 1e-6:
+                continue
+            goal_dir = delta_xz / d
+
+            # Signed angle from agent-forward to goal-direction in the x-z
+            # plane. Sign-flipped from a raw 2D cross so +bearing = agent's
+            # left (CCW about +y viewed from above), matching global_test.py.
+            cross = fwd_xz[1] * goal_dir[0] - fwd_xz[0] * goal_dir[1]
+            dot = fwd_xz[0] * goal_dir[0] + fwd_xz[1] * goal_dir[1]
+            bearing = float(np.arctan2(cross, dot))
+
+            sims = np.clip(np.cos(self._bin_angles - bearing), 0.0, None)
+            compass += (sims / (1.0 + d)).astype(np.float32)
+
+        return compass
 
 
 @registry.register_sensor(name="InflectionWeightSensor")

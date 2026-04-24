@@ -117,7 +117,59 @@ Output lands at
 
 ---
 
-### 2d. Monitoring training with TensorBoard
+### 2d. DINOv2-cached + goal-compass variant
+
+This variant adds an optional **12-bin oracle goal-direction compass** on top
+of the cached-DINOv2 pipeline.  At every step the `GoalCompassSensor` reads
+the agent pose and `episode.goals`, and emits a 12-D rectified,
+distance-weighted cosine vector (same math as `global_test.py`).  A
+`Linear(12, 32)` embedding is concatenated to the RNN input alongside the
+existing GPS / compass / objectgoal streams.
+
+The toggle is YAML-only: the sensor is listed in `TASK.SENSORS` of
+`configs/tasks/objectnav_mp3d_cached_goalcompass.yaml`; the policy
+auto-detects it via the observation space and builds the branch.  Removing
+the sensor from the task yaml disables the whole thing, and the existing
+cached-DINOv2 checkpoint remains load-compatible with the original config.
+
+**Step 1 — Precompute DINOv2 features** (same as 2c, skip if already done):
+
+```bash
+python scripts/precompute_dinov2_features.py \
+  --config configs/experiments/il_objectnav_mp3d_dinov2_cached.yaml \
+  --split train \
+  --out-dir data/dinov2_cache
+```
+
+**Step 2 — Train:**
+
+**Launcher:** `scripts/run_il_mp3d_1scene_dinov2_cached_goalcompass.sh`
+
+```bash
+bash scripts/run_il_mp3d_1scene_dinov2_cached_goalcompass.sh --full
+```
+
+**Experiment config:** `configs/experiments/il_objectnav_mp3d_dinov2_cached_goalcompass.yaml`
+
+Output lands at
+`data/new_checkpoints_dinov2_cached_gc/objectnav_il/mp3d_1scene_6cat_dinov2_cached_gc/`.
+
+**Eval:**
+
+```bash
+ALLOW_SLIDING=False SUCCESS_DISTANCE=1.0 \
+  NUM_ENVIRONMENTS=1 VIDEO_ENABLED=false \
+  bash scripts/eval_il_mp3d_1scene_full.sh configs/eval_dinov2_cached_goalcompass.env
+```
+
+The eval env file points to the **online-DINOv2 + goal-compass** twin config
+(`configs/experiments/il_objectnav_mp3d_dinov2_goalcompass.yaml`) so val
+episodes without precomputed features still run; the goal-compass branch is
+identical in both configs.
+
+---
+
+### 2e. Monitoring training with TensorBoard
 
 All three run variants write to `tb/objectnav_il/<TAG>/`.  Point TensorBoard at
 the parent to overlay all runs on the same plots:
