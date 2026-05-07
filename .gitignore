@@ -29,3 +29,5 @@ tb/
 # slurm logs
 slurm_logs/
 
+
+scene_mesh.html

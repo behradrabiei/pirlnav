@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 import argparse
-import os
 import random
-from datetime import datetime
 
 import numpy as np
 import numba
@@ -43,25 +41,23 @@ def main():
 
 
 def execute_exp(config: Config, run_type: str) -> None:
-    r"""This function runs the specified config with the specified runtype
-    Args:
-    config: Habitat.config
-    runtype: str {train or eval}
+    r"""Run the experiment with a reproducible seed.
+
+    ``config.TASK_CONFIG.SEED`` is used as-is (defaulting to ``100`` via
+    habitat-lab's default config). Every launch with the same config is
+    therefore bit-deterministic. To vary across runs, pass
+    ``TASK_CONFIG.SEED <n>`` on the CLI or set it in the YAML.
     """
-    # set a random seed (from detectron2)
-    seed = (
-        os.getpid()
-        + int(datetime.now().strftime("%S%f"))
-        + int.from_bytes(os.urandom(2), "big")
-    )
-    logger.info("Using a generated random seed {}".format(seed))
+    seed = int(config.TASK_CONFIG.SEED)
+    logger.info("Using TASK_CONFIG.SEED {}".format(seed))
     config.defrost()
     config.RUN_TYPE = run_type
-    config.TASK_CONFIG.SEED = seed
     config.freeze()
-    random.seed(config.TASK_CONFIG.SEED)
-    np.random.seed(config.TASK_CONFIG.SEED)
-    torch.manual_seed(config.TASK_CONFIG.SEED)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     if config.FORCE_TORCH_SINGLE_THREADED and torch.cuda.is_available():
         torch.set_num_threads(1)
 

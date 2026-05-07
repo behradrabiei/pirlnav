@@ -1,3 +1,27 @@
 cd /root/Projects/World-Modelling/pirlnav
 TAG=mp3d_1scene_v1 NUM_UPDATES=20000 NUM_ENVIRONMENTS=4 bash scripts/run_il_mp3d_1scene.sh --full
 tensorboard --logdir tb/objectnav_il/mp3d_1scene_v1
+
+EXTRA_OPTS="POLICY.RGB_ENCODER.use_augmentations_test_time True" \
+  EVAL_SPLITS=val \
+  EVAL_CKPT=data/new_checkpoints/objectnav_il/overfit_v1_noaug/ckpt.10.pth \
+  OUT_ROOT=data/eval_out/alpha_overfit_v1_noaug_ckpt10_aug \
+  ALLOW_SLIDING=False SUCCESS_DISTANCE=1.0 \
+  NUM_ENVIRONMENTS=1 VIDEO_ENABLED=false \
+  bash scripts/eval_il_mp3d_1scene_full.sh configs/eval_overfit.env
+
+  EXTRA_OPTS="POLICY.RGB_ENCODER.use_augmentations_test_time True" \
+  EVAL_SPLITS=val \
+  EVAL_CKPT=data/new_checkpoints_dinov2_cached/objectnav_il/mp3d_1scene_6cat_dinov2_cached/ckpt.10.pth \
+  OUT_ROOT=data/eval_out/alpha_dinov2_cached_ckpt10_aug \
+  ALLOW_SLIDING=False SUCCESS_DISTANCE=1.0 \
+  NUM_ENVIRONMENTS=1 VIDEO_ENABLED=false \
+  bash scripts/eval_il_mp3d_1scene_full.sh configs/eval_dinov2_cached.env
+
+  EXTRA_OPTS="POLICY.RGB_ENCODER.use_augmentations_test_time True" \
+  EVAL_SPLITS=val \
+  EVAL_CKPT=data/new_checkpoints_dinov2_cached_gc/objectnav_il/mp3d_1scene_6cat_dinov2_cached_gc_v1/ckpt.10.pth \
+  OUT_ROOT=data/eval_out/alpha_dinov2_cached_gc_v1_ckpt10_aug \
+  ALLOW_SLIDING=False SUCCESS_DISTANCE=1.0 \
+  NUM_ENVIRONMENTS=1 VIDEO_ENABLED=false \
+  bash scripts/eval_il_mp3d_1scene_full.sh configs/eval_dinov2_cached_goalcompass.env

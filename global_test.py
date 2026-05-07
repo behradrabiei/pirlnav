@@ -229,10 +229,10 @@ def build_env(config_path: str) -> habitat.Env:
     config.TASK.TOP_DOWN_MAP.MAP_PADDING = 3
     config.TASK.TOP_DOWN_MAP.DRAW_SOURCE = True
     config.TASK.TOP_DOWN_MAP.DRAW_BORDER = True
-    config.TASK.TOP_DOWN_MAP.DRAW_SHORTEST_PATH = True
+    config.TASK.TOP_DOWN_MAP.DRAW_SHORTEST_PATH = False
     config.TASK.TOP_DOWN_MAP.DRAW_VIEW_POINTS = True
     config.TASK.TOP_DOWN_MAP.DRAW_GOAL_POSITIONS = True
-    config.TASK.TOP_DOWN_MAP.DRAW_GOAL_AABBS = True
+    config.TASK.TOP_DOWN_MAP.DRAW_GOAL_AABBS = False
     config.TASK.TOP_DOWN_MAP.FOG_OF_WAR.DRAW = False
     config.freeze()
     return habitat.Env(config=config)
@@ -295,7 +295,33 @@ def read_single_key() -> str:
     return ch
 
 
-def run_episode(env: habitat.Env, episode_index: int, output_dir: Path) -> None:
+def save_video(frames: List[np.ndarray], path: Path, fps: int = 5) -> None:
+    """Encode an accumulated list of RGB frames into an mp4 file."""
+    if not frames:
+        print("No frames to write; skipping video.")
+        return
+    h, w = frames[0].shape[:2]
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(path), fourcc, fps, (w, h))
+    if not writer.isOpened():
+        print(f"Failed to open video writer for {path}")
+        return
+    try:
+        for f in frames:
+            if f.shape[:2] != (h, w):
+                f = cv2.resize(f, (w, h), interpolation=cv2.INTER_AREA)
+            writer.write(cv2.cvtColor(f, cv2.COLOR_RGB2BGR))
+    finally:
+        writer.release()
+    print(f"Saved video ({len(frames)} frames) to {path}")
+
+
+def run_episode(
+    env: habitat.Env,
+    episode_index: int,
+    output_dir: Path,
+    video_fps: int = 5,
+) -> None:
     # Skip to the requested episode.
     for _ in range(episode_index):
         env.reset()
@@ -308,52 +334,58 @@ def run_episode(env: habitat.Env, episode_index: int, output_dir: Path) -> None:
     print(f"  goal: {goal_label} | {len(goal_centroids)} instance(s) | start={episode.start_position}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    video_path = output_dir / f"episode_{episode.episode_id}.mp4"
+    recorded_frames: List[np.ndarray] = []
 
     step_idx = 0
-    while not env.episode_over:
-        agent_state = env.sim.get_agent_state()
-        agent_pos = np.asarray(agent_state.position, dtype=np.float64)
-        agent_rot = agent_state.rotation
+    try:
+        while not env.episode_over:
+            agent_state = env.sim.get_agent_state()
+            agent_pos = np.asarray(agent_state.position, dtype=np.float64)
+            agent_rot = agent_state.rotation
 
-        compass, per_goal = compute_compass_feature(
-            agent_pos, agent_rot, goal_centroids
-        )
-        info = env.get_metrics()
-        tdm = get_top_down_map(info)
+            compass, per_goal = compute_compass_feature(
+                agent_pos, agent_rot, goal_centroids
+            )
+            info = env.get_metrics()
+            tdm = get_top_down_map(info)
 
-        bundle = FrameBundle(
-            rgb=get_rgb(observations),
-            top_down_map=tdm,
-            compass=compass,
-            per_goal_info=per_goal,
-            step_idx=step_idx,
-            num_goals=len(goal_centroids),
-            goal_label=goal_label,
-        )
-        frame = compose_frame(bundle)
+            bundle = FrameBundle(
+                rgb=get_rgb(observations),
+                top_down_map=tdm,
+                compass=compass,
+                per_goal_info=per_goal,
+                step_idx=step_idx,
+                num_goals=len(goal_centroids),
+                goal_label=goal_label,
+            )
+            frame = compose_frame(bundle)
+            recorded_frames.append(frame)
 
-        # Save + display.
-        out_path = output_dir / "frame.png"
-        cv2.imwrite(str(out_path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            # Save + display.
+            out_path = output_dir / "frame.png"
+            cv2.imwrite(str(out_path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
-        # Print the compass vector for the terminal log.
-        formatted = ", ".join(f"{v:5.3f}" for v in compass)
-        print(f"step {step_idx:3d} | compass = [{formatted}]")
-        print("  frame.png updated | [w]forward  [a]left  [d]right  [f]stop  [q]quit: ",
-              end="", flush=True)
+            # Print the compass vector for the terminal log.
+            formatted = ", ".join(f"{v:5.3f}" for v in compass)
+            print(f"step {step_idx:3d} | compass = [{formatted}]")
+            print("  frame.png updated | [w]forward  [a]left  [d]right  [f]stop  [q]quit: ",
+                  end="", flush=True)
 
-        key = read_single_key().lower()
-        print(key)  # echo the key since cbreak suppresses it
+            key = read_single_key().lower()
+            print(key)  # echo the key since cbreak suppresses it
 
-        if key == "q":
-            print("Quit requested.")
-            break
-        if key not in KEY_TO_ACTION:
-            continue
+            if key == "q":
+                print("Quit requested.")
+                break
+            if key not in KEY_TO_ACTION:
+                continue
 
-        action = KEY_TO_ACTION[key]
-        observations = env.step(action)
-        step_idx += 1
+            action = KEY_TO_ACTION[key]
+            observations = env.step(action)
+            step_idx += 1
+    finally:
+        save_video(recorded_frames, video_path, fps=video_fps)
 
     print(f"Finished after {step_idx} step(s). Last frame saved to {output_dir / 'frame.png'}")
 
@@ -377,11 +409,22 @@ def main() -> None:
         default=Path("teleop_runs"),
         help="Where to save frame.png (single file, overwritten each step).",
     )
+    parser.add_argument(
+        "--video-fps",
+        type=int,
+        default=5,
+        help="Frames per second for the recorded teleop video.",
+    )
     args = parser.parse_args()
 
     env = build_env(args.config_path)
     try:
-        run_episode(env, args.episode_index, args.output_dir)
+        run_episode(
+            env,
+            args.episode_index,
+            args.output_dir,
+            video_fps=args.video_fps,
+        )
     finally:
         env.close()
 
