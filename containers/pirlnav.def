@@ -1,0 +1,123 @@
+Bootstrap: docker
+From: nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+
+%labels
+    Author PIRLNav
+    Description Dependency-only headless PIRLNav runtime for HPC GPU training
+
+%help
+    Dependency-only PIRLNav runtime.
+
+    This image intentionally does not include the PIRLNav source tree or MP3D
+    assets. Bind a cloned repository at /workspace/pirlnav and run with --nv:
+
+      singularity exec --nv --bind /path/to/pirlnav:/workspace/pirlnav \
+        --pwd /workspace/pirlnav pirlnav.sif bash scripts/run_il_mp3d_1scene.sh
+
+%environment
+    export CONDA_DIR=/opt/conda
+    export CONDA_DEFAULT_ENV=pirlnav
+    export PATH=/opt/conda/envs/pirlnav/bin:/opt/conda/bin:$PATH
+    export PYTHONPATH=/workspace/pirlnav:/workspace/pirlnav/habitat-lab:$PYTHONPATH
+    export LD_LIBRARY_PATH=/opt/conda/envs/pirlnav/lib:$LD_LIBRARY_PATH
+    export PYTHONUNBUFFERED=1
+    export GLOG_minloglevel=2
+    export MAGNUM_LOG=quiet
+    export HABITAT_SIM_LOG=quiet
+    export MPLBACKEND=Agg
+
+%post
+    set -eux
+
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        git \
+        libegl1 \
+        libgl1 \
+        libglib2.0-0 \
+        libglvnd0 \
+        libglx0 \
+        libsm6 \
+        libx11-6 \
+        libxext6 \
+        libxrender1 \
+        libxcb1 \
+        libxrandr2 \
+        wget \
+    && rm -rf /var/lib/apt/lists/*
+
+    curl -fsSL -o /tmp/miniforge.sh \
+        https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+    bash /tmp/miniforge.sh -b -p /opt/conda
+    rm /tmp/miniforge.sh
+
+    export PATH=/opt/conda/bin:$PATH
+    conda config --system --set channel_priority strict
+    conda create -y -n pirlnav -c conda-forge -c aihabitat \
+        python=3.9 \
+        pip \
+        habitat-sim=0.2.5 \
+        headless \
+        cmake \
+        ninja
+
+    . /opt/conda/etc/profile.d/conda.sh
+    conda activate pirlnav
+
+    python -m pip install --upgrade pip setuptools wheel
+
+    # Keep CUDA conservative for broad HPC compatibility. The NVIDIA driver on
+    # the host is provided through `singularity exec --nv`.
+    python -m pip install \
+        --index-url https://download.pytorch.org/whl/cu118 \
+        torch torchvision torchaudio
+
+    python -m pip install \
+        "gym>=0.22.0,<0.23.1" \
+        "numpy>=1.16.1,<2.0" \
+        "yacs>=0.1.8" \
+        "numpy-quaternion>=2019.3.18.14.33.20" \
+        "attrs>=19.1.0" \
+        "opencv-python-headless>=3.3.0" \
+        "imageio>=2.2.0" \
+        "imageio-ffmpeg>=0.2.0" \
+        "scipy>=1.0.0" \
+        "tqdm>=4.0.0" \
+        "numba>=0.44.0" \
+        "moviepy>=1.0.1" \
+        "protobuf==3.20.1" \
+        "tensorboard==2.8.0" \
+        "ifcfg" \
+        "lmdb>=0.98" \
+        "webdataset==0.1.40" \
+        "transformers" \
+        "timm" \
+        "huggingface-hub"
+
+    conda clean -afy
+    python - <<'PY'
+import habitat_sim
+import torch
+
+print("habitat_sim", habitat_sim.__version__)
+print("torch", torch.__version__, "cuda_runtime", torch.version.cuda)
+PY
+
+%runscript
+    exec "$@"
+
+%test
+    set -eux
+    python - <<'PY'
+import habitat_sim
+import torch
+
+print("python import check ok")
+print("habitat_sim", habitat_sim.__version__)
+print("torch", torch.__version__)
+print("cuda available", torch.cuda.is_available())
+PY
