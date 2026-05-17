@@ -4,7 +4,7 @@
 import statistics
 
 # numbers = [25.17, 24.50, 24.17, 24.50, 22.85]  # Fill with exactly 5 numbers, e.g. [1.0, 2.0, 3.0, 4.0, 5.0]
-numbers = [29.19, 22.87, 24.92, 25.63, 22.22]
+numbers = [16.90, 25.25, 17.40, 22.01, 16.49]
 
 if len(numbers) != 5:
     raise SystemExit("Set `numbers` to a list of exactly 5 values.")

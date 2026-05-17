@@ -16,6 +16,9 @@ mae/examples/output
 goal_images/
 data/
 
+# teleop output runs
+teleop_runs/
+
 # misc
 .DS_Store
 
@@ -31,3 +34,4 @@ slurm_logs/
 
 
 scene_mesh.html
+pirlnav.sif

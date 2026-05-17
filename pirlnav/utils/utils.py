@@ -5,6 +5,7 @@ import os
 from collections import defaultdict
 from typing import DefaultDict, Dict, List, Optional, Union
 
+import cv2
 import numpy as np
 import torch
 from habitat.utils import profiling_wrapper
@@ -18,6 +19,16 @@ from numpy import ndarray
 from torch import Tensor
 
 from pirlnav.policy.models.resnet_gn import ResNet
+from pirlnav.task.object_cloud import render_ego_cloud_topdown
+from pirlnav.task.semantic_map import label_map_to_rgb
+
+
+# Knuth multiplicative hash constant (floor(2**32 / phi)). Multiplying an
+# integer by this and taking the low 8 bits spreads consecutive inputs across
+# [0, 256), so adjacent instance ids land on perceptually distant colours
+# after a downstream HSV colormap lookup. Used to colourise the raw
+# first-person semantic observation for eval videos.
+_INSTANCE_HASH_MULTIPLIER: np.uint32 = np.uint32(2654435761)
 
 
 def load_encoder(encoder, path):
@@ -59,6 +70,54 @@ def observations_to_image(observation: Dict, info: Dict) -> np.ndarray:
             depth_map = depth_map.astype(np.uint8)
             depth_map = np.stack([depth_map for _ in range(3)], axis=2)
             render_obs_images.append(depth_map)
+        elif sensor_name == "semantic":
+            # Habitat-sim returns per-pixel instance ids. We don't have the
+            # per-scene instance->category table here (it lives inside
+            # SemanticMapSensor), so paint each instance with a hash-derived
+            # HSV colour. Adjacent instances land on distant hues; same
+            # instance always paints the same colour within an episode.
+            sem = observation[sensor_name]
+            if not isinstance(sem, np.ndarray):
+                sem = sem.cpu().numpy()
+            sem = sem.squeeze()
+            keys = (sem.astype(np.uint32) * _INSTANCE_HASH_MULTIPLIER) % np.uint32(256)
+            bgr = cv2.applyColorMap(keys.astype(np.uint8), cv2.COLORMAP_HSV)
+            render_obs_images.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+        elif sensor_name == "semantic_map":
+            # Egocentric (H, W) int8 label map from SemanticMapSensor with
+            # labels already in {-1, 0, 1, 2..22}. Resize to the running
+            # panel height with nearest-neighbour so cell boundaries stay
+            # crisp and no intermediate label values are invented.
+            label_map = observation[sensor_name]
+            if not isinstance(label_map, np.ndarray):
+                label_map = label_map.cpu().numpy()
+            sem_map_rgb = label_map_to_rgb(label_map)
+            if render_obs_images:
+                target_h = render_obs_images[0].shape[0]
+                if sem_map_rgb.shape[0] != target_h:
+                    new_w = max(
+                        1,
+                        int(round(sem_map_rgb.shape[1] * target_h / sem_map_rgb.shape[0])),
+                    )
+                    sem_map_rgb = cv2.resize(
+                        sem_map_rgb,
+                        (new_w, target_h),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+            render_obs_images.append(sem_map_rgb)
+        elif sensor_name == "ego_object_cloud":
+            # Packed (MAX_OBJECTS, 4) float32 from EgoObjectCloudSensor.
+            # Render as an agent-frame top-down panel (forward = up).
+            packed = observation[sensor_name]
+            if not isinstance(packed, np.ndarray):
+                packed = packed.cpu().numpy()
+            target_h = (
+                render_obs_images[0].shape[0] if render_obs_images else 480
+            )
+            cloud_rgb = render_ego_cloud_topdown(
+                packed.astype(np.float32, copy=False), side_px=target_h
+            )
+            render_obs_images.append(cloud_rgb)
 
     # add image goal if observation has image_goal info
     if "imagegoal" in observation or "imagegoalrotation" in observation:

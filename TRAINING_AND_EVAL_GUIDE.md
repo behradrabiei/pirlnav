@@ -169,7 +169,55 @@ identical in both configs.
 
 ---
 
-### 2e. Monitoring training with TensorBoard
+### 2e. DINOv2-cached + egocentric object-cloud variant
+
+This variant replaces the goal-compass branch of `2d` with an **online
+egocentric object cloud** processed by a small Point Transformer v1 encoder
+(`ObjectCloudEncoder`).  At every step the `EgoObjectCloudSensor` accumulates
+per-instance object centroids from the depth+semantic sensors, transforms
+them into the agent frame, and emits a packed `(MAX_OBJECTS, 4)` tensor of
+`[task_class_id, ex, ey, ez]` (rows with `task_class_id < 0` are padding).
+A `Linear`-projected 32-D scene CLS embedding is concatenated to the RNN
+input alongside the existing GPS / compass / objectgoal streams.  Empty
+clouds emit a literal zero embedding (no class-id pollution).
+
+The toggle is YAML-only: the sensor is listed in `TASK.SENSORS` of
+`configs/tasks/objectnav_mp3d_cached_object_cloud.yaml`; the policy
+auto-detects it via the observation space and builds the branch.
+
+**Step 1 — Precompute DINOv2 features** (same as 2c, skip if already done):
+
+```bash
+python scripts/precompute_dinov2_features.py \
+  --config configs/experiments/il_objectnav_mp3d_dinov2_cached.yaml \
+  --split train \
+  --out-dir data/dinov2_cache
+```
+
+**Step 2 — Train:**
+
+**Launcher:** `scripts/run_il_mp3d_1scene_dinov2_cached_object_cloud.sh`
+
+```bash
+bash scripts/run_il_mp3d_1scene_dinov2_cached_object_cloud.sh --full
+```
+
+Additional overrides:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MAX_OBJECTS` | 80 | Padded slot count per cloud (truncates to N closest if exceeded) |
+| `MIN_MASK_PIXELS` | 100 | Minimum semantic-mask pixels per instance to be added |
+| `CACHE_ROOT` | `data/dinov2_cache` | Root directory of precomputed `.pt` files |
+
+**Experiment config:** `configs/experiments/il_objectnav_mp3d_dinov2_cached_object_cloud.yaml`
+
+Output lands at
+`data/new_checkpoints_dinov2_cached_object_cloud/objectnav_il/mp3d_1scene_6cat_dinov2_cached_object_cloud/`.
+
+---
+
+### 2f. Monitoring training with TensorBoard
 
 All three run variants write to `tb/objectnav_il/<TAG>/`.  Point TensorBoard at
 the parent to overlay all runs on the same plots:

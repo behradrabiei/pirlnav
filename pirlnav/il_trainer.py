@@ -18,7 +18,7 @@ from gym import spaces
 from habitat import Config, logger
 from habitat.utils import profiling_wrapper
 from habitat.utils.render_wrapper import overlay_frame
-from habitat.utils.visualizations.utils import observations_to_image
+from pirlnav.utils.utils import observations_to_image
 from habitat_baselines.common.baseline_registry import baseline_registry
 from habitat_baselines.common.obs_transformers import (
     apply_obs_transforms_batch,

@@ -13,6 +13,15 @@ from habitat.core.registry import registry
 from habitat.core.simulator import Observations, Sensor
 from habitat.sims.habitat_simulator.actions import HabitatSimActions
 
+from pirlnav.task.object_cloud import ObjectCloud, make_camera_intrinsics
+from pirlnav.task.semantic_map import (
+    NUM_CATEGORIES,
+    NUM_CHANNELS,
+    SemanticMapper,
+    build_instance_to_task_id,
+    smooth_label_map,
+)
+
 
 def get_habitat_sim_action(action):
     if action == "TURN_RIGHT":
@@ -175,6 +184,345 @@ class CachedDINOv2Sensor(Sensor):
         return feat.astype(np.float32, copy=False)
 
     def get_observation(self, **kwargs):
+        return self._get_observation(**kwargs)
+
+
+@registry.register_sensor(name="SemanticMapSensor")
+class SemanticMapSensor(Sensor):
+    """Egocentric semantic + occupancy map, padded to a fixed ``(MAP_H, MAP_W)``.
+
+    Returns an agent-centered, agent-oriented ``(H, W) int8`` crop on every
+    step (forward = up). Two modes, selected by ``CACHE_ROOT``:
+
+    * ``CACHE_ROOT = ""`` (default) -- online mode. Maintains a per-worker
+      :class:`SemanticMapper` that accumulates depth + semantic observations
+      into a world-anchored label map across the lifetime of the current
+      episode. Requires ``DEPTH_SENSOR`` and ``SEMANTIC_SENSOR`` enabled in
+      ``SIMULATOR.AGENT_0.SENSORS`` (and ``DEPTH_SENSOR.NORMALIZE_DEPTH =
+      False``). Map is reset whenever ``task._is_resetting`` fires; the
+      per-scene instance->task-id table is rebuilt only when the scene
+      changes.
+
+    * ``CACHE_ROOT = "<path>"`` -- cached / oracle mode. Loads a precomputed
+      world-frame label map once per scene from
+      ``<CACHE_ROOT>/<scene_name>/<scene_name>.npz`` (the schema written by
+      ``teleop_semantic_map.save_map``: ``global_map``, ``origin_x``,
+      ``origin_z``, ``resolution``, ``scene_id``). Neither ``DEPTH_SENSOR``
+      nor ``SEMANTIC_SENSOR`` agent-level rendering is needed; the policy
+      sees the same ``(H, W) int8`` agent-frame crop as in online mode.
+
+    The optional ``SMOOTH_K`` config applies a kxk majority-vote filter to the
+    egocentric crop before returning (matches teleop's visualization smoothing
+    so what the policy sees is identical to what was being inspected).
+    """
+
+    cls_uuid: str = "semantic_map"
+
+    def __init__(self, sim, config: Config, *args: Any, **kwargs: Any):
+        self._sim = sim
+        self._H = int(config.MAP_H)
+        self._W = int(config.MAP_W)
+        self._res = float(config.MAP_RESOLUTION)
+        self._smooth_k = int(getattr(config, "SMOOTH_K", 0))
+        self._world_diameter = float(getattr(config, "WORLD_DIAMETER_M", 80.0))
+        self._cache_root = str(getattr(config, "CACHE_ROOT", "") or "")
+
+        self._mapper: Optional[SemanticMapper] = None
+        self._instance_to_task: Optional[np.ndarray] = None
+        self._cached_scene_id: Optional[str] = None
+
+        self.uuid = self.cls_uuid
+        self.observation_space = spaces.Box(
+            low=-1,
+            high=NUM_CHANNELS - 1,
+            shape=(self._H, self._W),
+            dtype=np.int8,
+        )
+
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return self.uuid
+
+    def _depth_intrinsics(self):
+        sim_cfg = self._sim.habitat_config
+        depth_cfg = sim_cfg.DEPTH_SENSOR
+        return (
+            float(np.deg2rad(float(depth_cfg.HFOV))),
+            float(depth_cfg.MIN_DEPTH),
+            float(depth_cfg.MAX_DEPTH),
+        )
+
+    def _load_scene_map(self, scene_id_path: str) -> None:
+        """Populate ``self._mapper`` from
+        ``<cache_root>/<scene>/<scene>.npz``. Raises with a clear hint if the
+        file is missing, malformed, or recorded at a different resolution
+        than the sensor expects (which would silently rescale the metric
+        window the policy is trained on).
+        """
+        scene_name = _scene_id_to_name(scene_id_path)
+        path = os.path.join(self._cache_root, scene_name, f"{scene_name}.npz")
+        if not os.path.isfile(path):
+            raise FileNotFoundError(
+                "SemanticMapSensor (cached mode): missing scene map for "
+                f"scene={scene_name!r} at {path!r}. Produce it with "
+                f"`python teleop_semantic_map.py --scene-id {scene_name} "
+                f"--output-dir {os.path.join(self._cache_root, scene_name)}`."
+            )
+        data = np.load(path, allow_pickle=False)
+        global_map = np.asarray(data["global_map"])
+        if global_map.ndim != 2:
+            raise ValueError(
+                f"{path!r}: global_map must be 2-D; got {tuple(global_map.shape)}"
+            )
+        if global_map.dtype != np.int8:
+            global_map = global_map.astype(np.int8)
+        cached_res = float(data["resolution"])
+        if abs(cached_res - self._res) > 1e-9:
+            raise ValueError(
+                f"{path!r}: cached map resolution {cached_res} m/cell does "
+                f"not match SEMANTIC_MAP_SENSOR.MAP_RESOLUTION {self._res} "
+                "m/cell; the trained policy expects a specific metric window."
+            )
+        self._mapper = SemanticMapper.from_cached(
+            global_map=global_map,
+            origin_x=float(data["origin_x"]),
+            origin_z=float(data["origin_z"]),
+            resolution=cached_res,
+            H=self._H,
+            W=self._W,
+        )
+
+    def _get_observation(
+        self,
+        observations: Dict[str, Observations],
+        episode,
+        task: EmbodiedTask,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        agent_state = self._sim.get_agent_state()
+
+        if self._cache_root:
+            if (
+                task._is_resetting
+                or self._mapper is None
+                or episode.scene_id != self._cached_scene_id
+            ):
+                self._load_scene_map(episode.scene_id)
+                self._cached_scene_id = episode.scene_id
+            assert self._mapper is not None  # mypy
+            crop = self._mapper.egocentric_view(
+                agent_pos=np.asarray(agent_state.position, dtype=np.float64),
+                agent_rot=agent_state.rotation,
+            )
+            if self._smooth_k > 1:
+                crop = smooth_label_map(crop, self._smooth_k)
+            return crop
+
+        if task._is_resetting or self._mapper is None:
+            start_pos = np.asarray(agent_state.position, dtype=np.float64)
+            self._mapper = SemanticMapper(
+                H=self._H,
+                W=self._W,
+                resolution=self._res,
+                start_pos=start_pos,
+                world_diameter_m=self._world_diameter,
+            )
+            if episode.scene_id != self._cached_scene_id:
+                self._instance_to_task = build_instance_to_task_id(self._sim)
+                self._cached_scene_id = episode.scene_id
+
+        sensor_state = agent_state.sensor_states["depth"]
+        hfov_rad, min_depth, max_depth = self._depth_intrinsics()
+
+        self._mapper.update(
+            depth_m=np.asarray(observations["depth"]),
+            semantic=np.asarray(observations["semantic"]),
+            sensor_pos=np.asarray(sensor_state.position, dtype=np.float64),
+            sensor_rot=sensor_state.rotation,
+            agent_y=float(agent_state.position[1]),
+            hfov_rad=hfov_rad,
+            instance_to_task=self._instance_to_task,
+            min_depth=min_depth,
+            max_depth=max_depth,
+        )
+        crop = self._mapper.egocentric_view(
+            agent_pos=np.asarray(agent_state.position, dtype=np.float64),
+            agent_rot=agent_state.rotation,
+        )
+        if self._smooth_k > 1:
+            crop = smooth_label_map(crop, self._smooth_k)
+        return crop
+
+    def get_observation(self, **kwargs: Any) -> np.ndarray:
+        return self._get_observation(**kwargs)
+
+
+@registry.register_sensor(name="EgoObjectCloudSensor")
+class EgoObjectCloudSensor(Sensor):
+    """Egocentric object cloud, padded to a fixed ``MAX_OBJECTS``.
+
+    Returns an agent-frame ``(MAX_OBJECTS, 4)`` float32 packed array every
+    step. Each row is ``[task_id, ex, ey, ez]`` for valid objects and
+    ``[-1, 0, 0, 0]`` for padding. When more than ``MAX_OBJECTS`` are tracked
+    we keep the closest by ego distance (the underlying world-frame storage
+    stays intact in either mode).
+
+    Two modes, selected by ``CACHE_ROOT``:
+
+    * ``CACHE_ROOT = ""`` (default) -- online mode. Maintains a per-worker
+      :class:`ObjectCloud` of mask-area-weighted depth-projected centroids
+      across the current episode. Requires ``DEPTH_SENSOR`` and
+      ``SEMANTIC_SENSOR`` enabled in ``SIMULATOR.AGENT_0.SENSORS`` and
+      ``DEPTH_SENSOR.NORMALIZE_DEPTH = False``.
+
+    * ``CACHE_ROOT = "<path>"`` -- cached mode. Loads a precomputed
+      world-frame cloud once per scene from
+      ``<CACHE_ROOT>/<scene_name>/<scene_name>.npz`` (the layout written by
+      ``dump_scene_object_clouds.py`` and ``teleop_object_cloud.py``) and
+      transforms it into the agent frame every step. Neither ``DEPTH_SENSOR``
+      nor ``SEMANTIC_SENSOR`` agent-level rendering is needed; the policy
+      sees the same observation as in online mode.
+    """
+
+    cls_uuid: str = "ego_object_cloud"
+
+    def __init__(self, sim, config: Config, *args: Any, **kwargs: Any):
+        self._sim = sim
+        self._max_objects = int(config.MAX_OBJECTS)
+        self._min_mask_pixels = int(getattr(config, "MIN_MASK_PIXELS", 100))
+        self._cache_root = str(getattr(config, "CACHE_ROOT", "") or "")
+
+        if not self._cache_root:
+            depth_cfg = sim.habitat_config.DEPTH_SENSOR
+            self._fx, self._fy, self._cx, self._cy = make_camera_intrinsics(
+                int(depth_cfg.WIDTH), int(depth_cfg.HEIGHT), float(depth_cfg.HFOV)
+            )
+            self._min_depth = float(depth_cfg.MIN_DEPTH)
+            self._max_depth = float(depth_cfg.MAX_DEPTH)
+
+        self._cloud: Optional[ObjectCloud] = None
+        self._instance_to_task: Optional[np.ndarray] = None
+        self._cached_scene_id: Optional[str] = None
+
+        self._world_obj_pos: Optional[np.ndarray] = None   # (N, 3) float32
+        self._world_task_ids: Optional[np.ndarray] = None  # (N,)   int64
+
+        self.uuid = self.cls_uuid
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(self._max_objects, 4),
+            dtype=np.float32,
+        )
+
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return self.uuid
+
+    def _load_scene_cloud(self, scene_id_path: str) -> None:
+        """Populate ``_world_obj_pos`` / ``_world_task_ids`` from the per-scene
+        npz at ``<cache_root>/<scene>/<scene>.npz``. Raises a clear error if
+        the file is missing, malformed, or out of the expected range.
+        """
+        scene_name = _scene_id_to_name(scene_id_path)
+        path = os.path.join(
+            self._cache_root, scene_name, f"{scene_name}.npz"
+        )
+        if not os.path.isfile(path):
+            raise FileNotFoundError(
+                "EgoObjectCloudSensor (cached mode): missing scene cloud for "
+                f"scene={scene_name!r} at {path!r}. Run "
+                "`python dump_scene_object_clouds.py "
+                f"--output-dir {self._cache_root}` to populate it."
+            )
+        data = np.load(path)  # allow_pickle=False; we never read 'labels'
+        obj_pos = np.asarray(data["obj_pos"], dtype=np.float32)
+        task_ids = np.asarray(data["task_ids"], dtype=np.int64)
+        if obj_pos.ndim != 2 or obj_pos.shape[1] != 3:
+            raise ValueError(
+                f"{path!r}: obj_pos must be (N, 3); got {tuple(obj_pos.shape)}"
+            )
+        if task_ids.shape != (obj_pos.shape[0],):
+            raise ValueError(
+                f"{path!r}: task_ids shape {tuple(task_ids.shape)} does not "
+                f"match obj_pos N={obj_pos.shape[0]}"
+            )
+        if obj_pos.size and (task_ids.min() < 0 or task_ids.max() >= NUM_CATEGORIES):
+            raise ValueError(
+                f"{path!r}: task_ids out of range [0, {NUM_CATEGORIES - 1}]; "
+                f"saw [{int(task_ids.min())}, {int(task_ids.max())}]"
+            )
+        self._world_obj_pos = obj_pos
+        self._world_task_ids = task_ids
+
+    def _pack_ego(
+        self, pos_ego: np.ndarray, task_ids: np.ndarray
+    ) -> np.ndarray:
+        """Closest-by-ego-distance prune to ``MAX_OBJECTS`` and pack into the
+        ``(MAX_OBJECTS, 4)`` observation; padding rows are ``[-1, 0, 0, 0]``.
+        """
+        packed = np.zeros((self._max_objects, 4), dtype=np.float32)
+        packed[:, 0] = -1.0
+        n = int(pos_ego.shape[0])
+        if n == 0:
+            return packed
+        pos = pos_ego.astype(np.float32, copy=False)
+        tids = task_ids.astype(np.float32, copy=False)
+        if n > self._max_objects:
+            d2 = np.einsum("ij,ij->i", pos, pos)
+            keep = np.argpartition(d2, self._max_objects)[: self._max_objects]
+            pos, tids = pos[keep], tids[keep]
+            n = self._max_objects
+        packed[:n, 0] = tids
+        packed[:n, 1:4] = pos
+        return packed
+
+    def _get_observation(
+        self,
+        observations: Dict[str, Observations],
+        episode,
+        task: EmbodiedTask,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        agent_state = self._sim.get_agent_state()
+        agent_pos = np.asarray(agent_state.position, dtype=np.float32)
+        R = quaternion.as_rotation_matrix(agent_state.rotation).astype(np.float32)
+
+        if self._cache_root:
+            if (
+                task._is_resetting
+                or self._world_obj_pos is None
+                or episode.scene_id != self._cached_scene_id
+            ):
+                self._load_scene_cloud(episode.scene_id)
+                self._cached_scene_id = episode.scene_id
+            assert self._world_obj_pos is not None  # mypy
+            pos_ego = (self._world_obj_pos - agent_pos) @ R
+            return self._pack_ego(pos_ego, self._world_task_ids)
+
+        if task._is_resetting or self._cloud is None:
+            if episode.scene_id != self._cached_scene_id:
+                self._instance_to_task = build_instance_to_task_id(self._sim)
+                self._cached_scene_id = episode.scene_id
+            self._cloud = ObjectCloud(
+                self._instance_to_task,
+                min_mask_pixels=self._min_mask_pixels,
+            )
+
+        sensor_state = agent_state.sensor_states["depth"]
+        self._cloud.update(
+            depth_m=np.asarray(observations["depth"]),
+            semantic=np.asarray(observations["semantic"]),
+            sensor_pos=np.asarray(sensor_state.position, dtype=np.float64),
+            sensor_rot=sensor_state.rotation,
+            fx=self._fx, fy=self._fy, cx=self._cx, cy=self._cy,
+            depth_min=self._min_depth, depth_max=self._max_depth,
+        )
+        ego = self._cloud.to_ego_dict(
+            agent_pos=np.asarray(agent_state.position, dtype=np.float64),
+            agent_rot=agent_state.rotation,
+        )
+        return self._pack_ego(ego["obj_pos"], ego["task_ids"])
+
+    def get_observation(self, **kwargs: Any) -> np.ndarray:
         return self._get_observation(**kwargs)
 
 

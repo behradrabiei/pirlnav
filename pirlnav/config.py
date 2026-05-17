@@ -47,6 +47,43 @@ _TASK_CONFIG.TASK.GOAL_COMPASS_SENSOR.TYPE = "GoalCompassSensor"
 _TASK_CONFIG.TASK.GOAL_COMPASS_SENSOR.NUM_BINS = 12
 _TASK_CONFIG.TASK.GOAL_COMPASS_SENSOR_UUID = "goal_compass"
 
+# Optional online egocentric semantic + occupancy map sensor.  Only active
+# when "SEMANTIC_MAP_SENSOR" is listed in TASK.SENSORS *and* DEPTH_SENSOR /
+# SEMANTIC_SENSOR are listed in SIMULATOR.AGENT_0.SENSORS (with
+# DEPTH_SENSOR.NORMALIZE_DEPTH = False).  Returns an (MAP_H, MAP_W) int8
+# label map at every step; the policy converts to one-hot inside forward.
+_TASK_CONFIG.TASK.SEMANTIC_MAP_SENSOR = CN()
+_TASK_CONFIG.TASK.SEMANTIC_MAP_SENSOR.TYPE = "SemanticMapSensor"
+_TASK_CONFIG.TASK.SEMANTIC_MAP_SENSOR.MAP_H = 256
+_TASK_CONFIG.TASK.SEMANTIC_MAP_SENSOR.MAP_W = 256
+_TASK_CONFIG.TASK.SEMANTIC_MAP_SENSOR.MAP_RESOLUTION = 0.025
+_TASK_CONFIG.TASK.SEMANTIC_MAP_SENSOR.SMOOTH_K = 4
+_TASK_CONFIG.TASK.SEMANTIC_MAP_SENSOR.WORLD_DIAMETER_M = 80.0
+# Empty -> online accumulation from depth + semantic (the default behaviour).
+# Non-empty -> load a precomputed world-frame label map from
+# "<CACHE_ROOT>/<scene>/<scene>.npz" (the layout written by
+# teleop_semantic_map.save_map) and skip the per-step depth/semantic
+# projection; the policy still receives an agent-centered egocentric crop.
+_TASK_CONFIG.TASK.SEMANTIC_MAP_SENSOR.CACHE_ROOT = ""
+_TASK_CONFIG.TASK.SEMANTIC_MAP_SENSOR_UUID = "semantic_map"
+
+# Optional online egocentric object cloud sensor (variable-N tracked-object
+# centroids packed to a fixed (MAX_OBJECTS, 4) float32 array).  Active iff
+# "EGO_OBJECT_CLOUD_SENSOR" is listed in TASK.SENSORS *and* DEPTH_SENSOR /
+# SEMANTIC_SENSOR are listed in SIMULATOR.AGENT_0.SENSORS (with
+# DEPTH_SENSOR.NORMALIZE_DEPTH = False).  Each row is [task_id, ex, ey, ez]
+# in agent-frame coordinates; padding rows have task_id = -1.  Consumed by
+# ObjectCloudEncoder inside ObjectNavILMAENet.
+_TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR = CN()
+_TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR.TYPE = "EgoObjectCloudSensor"
+_TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR.MAX_OBJECTS = 80
+_TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR.MIN_MASK_PIXELS = 100
+# Empty -> online accumulation (current behaviour).  Non-empty -> load
+# precomputed world-frame cloud from "<CACHE_ROOT>/<scene>/<scene>.npz"
+# (the layout written by dump_scene_object_clouds.py / teleop_object_cloud.py).
+_TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR.CACHE_ROOT = ""
+_TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR_UUID = "ego_object_cloud"
+
 _TASK_CONFIG.TASK.SIMPLE_REWARD = CN()
 _TASK_CONFIG.TASK.SIMPLE_REWARD.TYPE = "SimpleReward"
 _TASK_CONFIG.TASK.SIMPLE_REWARD.SUCCESS_REWARD = 2.5
@@ -197,6 +234,27 @@ _CONFIG.POLICY.RGB_ENCODER.dinov2_output_dim = 768
 
 _CONFIG.POLICY.GOAL_COMPASS_ENCODER = CN()
 _CONFIG.POLICY.GOAL_COMPASS_ENCODER.embedding_size = 32
+
+# Encoder for the egocentric semantic map (only used when SEMANTIC_MAP_SENSOR
+# is in TASK.SENSORS).  Wraps VisualEncoder(<backbone>) with input_channels
+# = NUM_CHANNELS + 1 = 24, then projects flat backbone output to
+# embedding_size with a single Linear (no trailing ReLU, matching the
+# goal_compass_embedding convention).
+_CONFIG.POLICY.MAP_ENCODER = CN()
+_CONFIG.POLICY.MAP_ENCODER.embedding_size = 32
+_CONFIG.POLICY.MAP_ENCODER.backbone = "resnet18"
+
+# Encoder for the egocentric object cloud (only used when
+# EGO_OBJECT_CLOUD_SENSOR is in TASK.SENSORS).  PTv1-style point transformer
+# that summarises the (MAX_OBJECTS, 4) packed cloud into a fixed
+# embedding_size CLS vector concatenated into the GRU input alongside the
+# cached-DINOv2 RGB feature.
+_CONFIG.POLICY.OBJECT_CLOUD_ENCODER = CN()
+_CONFIG.POLICY.OBJECT_CLOUD_ENCODER.embedding_size = 32
+_CONFIG.POLICY.OBJECT_CLOUD_ENCODER.num_classes = 21
+_CONFIG.POLICY.OBJECT_CLOUD_ENCODER.d_model = 64
+_CONFIG.POLICY.OBJECT_CLOUD_ENCODER.num_layers = 2
+_CONFIG.POLICY.OBJECT_CLOUD_ENCODER.rpe_mode = "log_distance"
 
 _CONFIG.POLICY.STATE_ENCODER = CN()
 _CONFIG.POLICY.STATE_ENCODER.hidden_size = 2048

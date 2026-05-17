@@ -9,7 +9,9 @@ from habitat_baselines.rl.models.rnn_state_encoder import build_rnn_state_encode
 from habitat_baselines.rl.ppo import Net
 
 from pirlnav.policy.dinov2_encoder import DINOv2VisualEncoder
+from pirlnav.policy.object_cloud_encoder import ObjectCloudEncoder
 from pirlnav.policy.policy import ILPolicy
+from pirlnav.policy.semantic_map_encoder import SemanticMapEncoder
 from pirlnav.policy.transforms import get_transform
 from pirlnav.policy.visual_encoder import VisualEncoder
 from pirlnav.utils.utils import load_encoder
@@ -162,6 +164,74 @@ class ObjectNavILMAENet(Net):
                 )
             )
 
+        # Optional egocentric semantic+occupancy map (from SemanticMapSensor).
+        # Auto-activates iff the sensor is listed in TASK.SENSORS so the
+        # observation-space carries a "semantic_map" key.  Drop-in replacement
+        # for the goal_compass slot in the GRU input concat; the two can
+        # coexist if both sensors are listed, but in practice you list one.
+        self._semantic_map_uuid = "semantic_map"
+        if self._semantic_map_uuid in observation_space.spaces:
+            map_space = observation_space.spaces[self._semantic_map_uuid]
+            map_h, map_w = int(map_space.shape[0]), int(map_space.shape[1])
+            assert map_h == map_w, (
+                "SemanticMapEncoder expects a square map; got "
+                f"({map_h}, {map_w})"
+            )
+            map_cfg = getattr(policy_config, "MAP_ENCODER", None)
+            map_embed_dim = (
+                int(map_cfg.embedding_size) if map_cfg is not None else 32
+            )
+            map_backbone = (
+                str(map_cfg.backbone)
+                if map_cfg is not None and hasattr(map_cfg, "backbone")
+                else "resnet18"
+            )
+            self.map_encoder = SemanticMapEncoder(
+                image_size=map_h,
+                output_dim=map_embed_dim,
+                backbone=map_backbone,
+            )
+            rnn_input_size += map_embed_dim
+            logger.info(
+                "\n\nSetting up Semantic Map sensor "
+                "({}x{} -> {} dim, backbone={})".format(
+                    map_h, map_w, map_embed_dim, map_backbone
+                )
+            )
+
+        # Optional egocentric object cloud (from EgoObjectCloudSensor).
+        # Auto-activates iff the sensor is listed in TASK.SENSORS so the
+        # observation-space carries an "ego_object_cloud" key.  Drop-in
+        # alternative to the semantic-map slot in the GRU input concat.
+        self._object_cloud_uuid = "ego_object_cloud"
+        if self._object_cloud_uuid in observation_space.spaces:
+            oc_space = observation_space.spaces[self._object_cloud_uuid]
+            assert (
+                len(oc_space.shape) == 2 and oc_space.shape[1] == 4
+            ), (
+                "ObjectCloudEncoder expects a (MAX_OBJECTS, 4) packed "
+                f"sensor; got shape {tuple(oc_space.shape)}"
+            )
+            max_obj = int(oc_space.shape[0])
+            oc_cfg = getattr(policy_config, "OBJECT_CLOUD_ENCODER", None)
+            assert oc_cfg is not None, (
+                "POLICY.OBJECT_CLOUD_ENCODER must be configured when "
+                "EGO_OBJECT_CLOUD_SENSOR is enabled."
+            )
+            oc_embed_dim = int(oc_cfg.embedding_size)
+            self.object_cloud_encoder = ObjectCloudEncoder(
+                num_classes=int(oc_cfg.num_classes),
+                d_model=int(oc_cfg.d_model),
+                out_dim=oc_embed_dim,
+                num_layers=int(oc_cfg.num_layers),
+                rpe_mode=str(oc_cfg.rpe_mode),
+            )
+            rnn_input_size += oc_embed_dim
+            logger.info(
+                "\n\nSetting up Ego Object Cloud sensor "
+                "(MAX_OBJECTS={} -> {} dim)".format(max_obj, oc_embed_dim)
+            )
+
         if policy_config.SEQ2SEQ.use_prev_action:
             self.prev_action_embedding = nn.Embedding(num_actions + 1, 32)
             rnn_input_size += self.prev_action_embedding.embedding_dim
@@ -288,6 +358,28 @@ class ObjectNavILMAENet(Net):
             if obs_gc.dim() == 3:
                 obs_gc = obs_gc.contiguous().view(-1, obs_gc.size(2))
             x.append(self.goal_compass_embedding(obs_gc.float()))
+
+        if (
+            self._semantic_map_uuid in observations
+            and hasattr(self, "map_encoder")
+        ):
+            obs_map = observations[self._semantic_map_uuid]
+            if obs_map.dim() == 4:  # (T, N, H, W) -> (T*N, H, W)
+                obs_map = obs_map.contiguous().view(
+                    -1, obs_map.size(2), obs_map.size(3)
+                )
+            x.append(self.map_encoder(obs_map))
+
+        if (
+            self._object_cloud_uuid in observations
+            and hasattr(self, "object_cloud_encoder")
+        ):
+            obs_oc = observations[self._object_cloud_uuid]
+            if obs_oc.dim() == 4:  # (T, N, MAX, 4) -> (T*N, MAX, 4)
+                obs_oc = obs_oc.contiguous().view(
+                    -1, obs_oc.size(2), obs_oc.size(3)
+                )
+            x.append(self.object_cloud_encoder(obs_oc))
 
         if self.policy_config.SEQ2SEQ.use_prev_action:
             prev_actions_embedding = self.prev_action_embedding(
