@@ -36,9 +36,9 @@ From: nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
         ca-certificates \
         curl \
         git \
+        iproute2 \
         libegl1 \
         libgl1 \
-        libopengl0 \
         libglib2.0-0 \
         libglvnd0 \
         libglx0 \
@@ -97,7 +97,8 @@ From: nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
         "webdataset==0.1.40" \
         "transformers" \
         "timm" \
-        "huggingface-hub"
+        "huggingface-hub" \
+        "wandb"
 
     conda clean -afy
     python - <<'PY'
