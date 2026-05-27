@@ -40,6 +40,16 @@ NAME_TO_TASK: Dict[str, int] = {
     name: i for i, (name, _) in enumerate(OBJECTNAV_CATEGORIES)
 }
 
+# HM3D 6-goal ObjectNav order (matches category_to_task_category_id in the
+# 6-cat MP3D subset).  Index by ObjectGoalSensor id → 21-class object-cloud
+# task id for compass-aux goal conditioning.
+HM3D_6CAT_NAMES: Tuple[str, ...] = (
+    "chair", "bed", "plant", "toilet", "tv_monitor", "sofa"
+)
+HM3D6_TO_OBJECT_CLOUD_TASK: Tuple[int, ...] = tuple(
+    NAME_TO_TASK[n] for n in HM3D_6CAT_NAMES
+)
+
 UNKNOWN: int = -1
 FREE: int = 0
 OCCUPIED: int = 1

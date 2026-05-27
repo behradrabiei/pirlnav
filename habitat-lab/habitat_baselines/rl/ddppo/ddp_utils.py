@@ -187,7 +187,7 @@ def load_resume_state(filename_or_config: Union[Config, str]) -> Optional[Any]:
     if rank0_only():
         logger.info(f"Loading resume state: {filename}")
 
-    return torch.load(filename, map_location="cpu")
+    return torch.load(filename, map_location="cpu", weights_only=False)
 
 
 def requeue_job():

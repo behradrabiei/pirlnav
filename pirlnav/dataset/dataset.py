@@ -19,7 +19,11 @@ from habitat.datasets.pointnav.pointnav_dataset import (
 )
 from habitat.tasks.nav.object_nav_task import ObjectGoal, ObjectViewLocation
 
-from pirlnav.task.object_nav_task import ObjectGoalNavEpisode, ReplayActionSpec
+from pirlnav.task.object_nav_task import (
+    AgentStateSpec,
+    ObjectGoalNavEpisode,
+    ReplayActionSpec,
+)
 
 
 @registry.register_dataset(name="ObjectNav-v2")
@@ -155,7 +159,15 @@ class ObjectNavDatasetV2(PointNavDatasetV1):
 
             if episode.reference_replay is not None:
                 for i, replay_step in enumerate(episode.reference_replay):
-                    replay_step["agent_state"] = None
+                    # Preserve the recorded per-step agent_state (position +
+                    # rotation) so pose-replay IL can teleport the agent
+                    # instead of stepping discrete actions through sim
+                    # physics.  Action-replay IL and RL ignore this field, so
+                    # parsing it unconditionally is safe and keeps the loader
+                    # path identical across run types.
+                    state = replay_step.get("agent_state")
+                    if state is not None:
+                        replay_step["agent_state"] = AgentStateSpec(**state)
                     episode.reference_replay[i] = ReplayActionSpec(**replay_step)
 
             if episode.shortest_paths is not None:

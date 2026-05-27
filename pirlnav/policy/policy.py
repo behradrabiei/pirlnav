@@ -4,7 +4,9 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 import abc
+from typing import Dict
 
+import torch
 from habitat import logger
 from habitat_baselines.rl.ppo import Policy
 from habitat_baselines.utils.common import CategoricalNet
@@ -111,6 +113,15 @@ class ILPolicy(nn.Module, Policy):
             distribution_entropy,
             rnn_hidden_states,
         )
+
+    def get_last_aux(self) -> Dict[str, torch.Tensor]:
+        """Return the auxiliary tensors stashed by the underlying Net during
+        its most recent forward pass (empty dict if the Net does not
+        populate one). Used by ILAgent.update to retrieve the
+        compass_pred for the auxiliary loss without changing forward's
+        return signature.
+        """
+        return getattr(self.net, "_last_aux", {}) or {}
 
     @classmethod
     @abc.abstractmethod

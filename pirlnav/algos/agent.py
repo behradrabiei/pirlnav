@@ -7,6 +7,7 @@
 from typing import Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 from habitat import logger
 from habitat.utils import profiling_wrapper
 from torch import Tensor
@@ -27,6 +28,7 @@ class ILAgent(nn.Module):
         wd: Optional[float] = None,
         optimizer: Optional[str] = "AdamW",
         entropy_coef: Optional[float] = 0.0,
+        compass_aux_coef: float = 0.0,
     ) -> None:
 
         super().__init__()
@@ -38,6 +40,9 @@ class ILAgent(nn.Module):
         self.max_grad_norm = max_grad_norm
         self.num_envs = num_envs
         self.entropy_coef = entropy_coef
+        # Weight on the optional goal-compass auxiliary regression loss.
+        # When 0.0 the loss term is skipped entirely (default behaviour).
+        self.compass_aux_coef = float(compass_aux_coef)
 
         # use different lr for visual encoder and other networks
         visual_encoder_params, other_params = [], []
@@ -77,10 +82,11 @@ class ILAgent(nn.Module):
     def forward(self, *x):
         raise NotImplementedError
 
-    def update(self, rollouts) -> Tuple[float, float, float]:
+    def update(self, rollouts) -> Tuple[float, Tensor, float, float, float]:
         total_loss_epoch = 0.0
         total_entropy = 0.0
         total_action_loss = 0.0
+        total_compass_loss = 0.0
 
         profiling_wrapper.range_push("BC.update epoch")
         data_generator = rollouts.recurrent_generator(self.num_mini_batch)
@@ -118,6 +124,25 @@ class ILAgent(nn.Module):
             ).mean()
             total_loss = action_loss_term - entropy_term
 
+            # Optional goal-compass auxiliary regression loss.  The MSE
+            # supervises the point-transformer's 12-D compass prediction
+            # against the privileged GoalCompassSensor target -- the oracle
+            # value is *only* used as a regression label here, never fed
+            # into the policy forward pass.
+            compass_loss_term: Optional[Tensor] = None
+            if self.compass_aux_coef > 0.0:
+                aux = self.actor_critic.get_last_aux()
+                compass_pred = aux.get("compass_pred")
+                compass_target = batch["observations"].get("goal_compass")
+                if compass_pred is not None and compass_target is not None:
+                    compass_loss_term = F.mse_loss(
+                        compass_pred,
+                        compass_target.to(compass_pred.dtype),
+                    )
+                    total_loss = (
+                        total_loss + self.compass_aux_coef * compass_loss_term
+                    )
+
             self.before_backward(total_loss)
             total_loss.backward()
             self.after_backward(total_loss)
@@ -129,6 +154,8 @@ class ILAgent(nn.Module):
             total_loss_epoch += total_loss.item()
             total_action_loss += action_loss_term.item()
             total_entropy += dist_entropy.item()
+            if compass_loss_term is not None:
+                total_compass_loss += compass_loss_term.item()
             hidden_states.append(rnn_hidden_states)
 
         profiling_wrapper.range_pop()
@@ -138,12 +165,14 @@ class ILAgent(nn.Module):
         total_loss_epoch /= self.num_mini_batch
         total_entropy /= self.num_mini_batch
         total_action_loss /= self.num_mini_batch
+        total_compass_loss /= self.num_mini_batch
 
         return (
             total_loss_epoch,
             hidden_states,
             total_entropy,
             total_action_loss,
+            total_compass_loss,
         )
 
     def before_backward(self, loss: Tensor) -> None:

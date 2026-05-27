@@ -72,6 +72,62 @@ class DemonstrationSensor(Sensor):
         return self._get_observation(**kwargs)
 
 
+@registry.register_sensor(name="NextPoseSensor")
+class NextPoseSensor(Sensor):
+    r"""Per-step expert agent pose for pose-replay IL.
+
+    Mirrors :class:`DemonstrationSensor`'s timestep bookkeeping so the
+    emitted pose at step ``t`` aligns with the action emitted by
+    ``next_actions`` at the same step.  Returns a 7-D float32 vector
+    ``[px, py, pz, qx, qy, qz, qw]`` read from
+    ``episode.reference_replay[t].agent_state``.  When the recorded
+    ``agent_state`` is missing (legacy data) or the replay is exhausted, a
+    zero vector is returned; the IL trainer only dispatches a TELEPORT
+    for non-STOP expert actions, so a stale/zero pose is never consumed.
+    """
+
+    POSE_DIM = 7
+
+    def __init__(self, **kwargs):
+        self.uuid = "next_pose"
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(self.POSE_DIM,),
+            dtype=np.float32,
+        )
+        self.timestep = 0
+        self._zero = np.zeros(self.POSE_DIM, dtype=np.float32)
+
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return self.uuid
+
+    def _get_observation(
+        self,
+        observations: Dict[str, Observations],
+        episode,
+        task: EmbodiedTask,
+        **kwargs,
+    ):
+        if task._is_resetting:
+            self.timestep = 1
+
+        pose = self._zero
+        if self.timestep < len(episode.reference_replay):
+            state = episode.reference_replay[self.timestep].agent_state
+            if state is not None and state.position is not None and state.rotation is not None:
+                pose = np.asarray(
+                    list(state.position) + list(state.rotation),
+                    dtype=np.float32,
+                )
+
+        self.timestep += 1
+        return pose
+
+    def get_observation(self, **kwargs):
+        return self._get_observation(**kwargs)
+
+
 def _scene_id_to_name(scene_id: str) -> str:
     """Extract a bare scene name from a habitat scene_id path.
 

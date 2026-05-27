@@ -35,6 +35,6 @@ POLICY:
     backbone: "dinov2_base"
     pretrained_encoder: null
     dinov2_model_name: "facebook/dinov2-base"
-    dinov2_resize_h: 476
-    dinov2_resize_w: 630
+    dinov2_resize_h: 252
+    dinov2_resize_w: 252
     dinov2_output_dim: 768

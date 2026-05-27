@@ -1,15 +1,15 @@
-BASE_TASK_CONFIG_PATH: "configs/tasks/objectnav_mp3d_object_cloud.yaml"
+BASE_TASK_CONFIG_PATH: "configs/tasks/objectnav_mp3d_object_cloud_compass_aux.yaml"
 CMD_TRAILING_OPTS: ["TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS", "50000"]
 ENV_NAME: "SimpleRLEnv"
 SIMULATOR_GPU_ID: 0
 TORCH_GPU_ID: 0
 VIDEO_OPTION: []
-TENSORBOARD_DIR: "tb_dinov2_object_cloud"
+TENSORBOARD_DIR: "tb_dinov2_object_cloud_compass_aux"
 VIDEO_DIR: "video_dir"
 TEST_EPISODE_COUNT: -1
-EVAL_CKPT_PATH_DIR: "data/new_checkpoints_dinov2_cached_object_cloud"
+EVAL_CKPT_PATH_DIR: "data/new_checkpoints_dinov2_object_cloud_compass_aux"
 NUM_ENVIRONMENTS: 4
-CHECKPOINT_FOLDER: "data/new_checkpoints_dinov2_cached_object_cloud"
+CHECKPOINT_FOLDER: "data/new_checkpoints_dinov2_object_cloud_compass_aux"
 TRAINER_NAME: "pirlnav-il"
 SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR", "SEMANTIC_SENSOR"]
 NUM_UPDATES: 20000
@@ -23,6 +23,12 @@ EVAL:
 IL:
   POLICY:
     name: "ObjectNavILMAEPolicy"
+  BehaviorCloning:
+    # Weight on the goal-compass auxiliary MSE loss applied to the point-
+    # transformer's 12-D compass head. The oracle GoalCompassSensor value
+    # is used only as a regression label here; it is never fed into the
+    # policy at train or eval time.
+    compass_aux_coef: 1.0
 
 RL:
   SUCCESS_REWARD: 2.5
@@ -40,3 +46,7 @@ POLICY:
     dinov2_output_dim: 768
   OBJECT_CLOUD_ENCODER:
     embedding_size: 32
+    # Toggles the 12-D compass head, goal-conditioned encoder (CLS query
+    # biased by goal-class embedding + per-object is_goal flag), and
+    # compass_proj Linear(12, 32) into the GRU.
+    compass_aux_loss: True

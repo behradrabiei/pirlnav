@@ -226,6 +226,11 @@ class SimpleObjectCloudEncoder(nn.Module):
     agent_pos : (B, 3)    float (origin in agent-frame coords).
     obj_mask  : (B, N)    bool, True = valid object. Each sample MUST contain
                 at least one valid object (the wrapper below enforces this).
+    goal_class : (B,) int64 in [0, num_classes), optional. When provided
+                *and* ``use_goal_conditioning`` was True at construction, the
+                CLS token is biased by ``ClassEmbedding(goal_class)`` (option
+                A) and each object feature receives a learned bias when its
+                class matches the goal (option B). Otherwise ignored.
 
     Output
     ------
@@ -241,6 +246,7 @@ class SimpleObjectCloudEncoder(nn.Module):
         rpe_mode: RPEMode = "log_distance",
         ffn_expansion: int = 2,
         dropout: float = 0.0,
+        use_goal_conditioning: bool = False,
     ):
         super().__init__()
         self.d_model = d_model
@@ -263,17 +269,40 @@ class SimpleObjectCloudEncoder(nn.Module):
         self.cls_norm = nn.LayerNorm(d_model)
         self.cls_head = nn.Linear(d_model, out_dim)
 
+        # Option B: per-object is_goal flag embedding.  Gated so that when
+        # use_goal_conditioning is False the module is bit-identical to the
+        # pre-goal-conditioning version (same RNG draws, same state_dict
+        # keys, old checkpoints still load).
+        if use_goal_conditioning:
+            self.goal_flag_embed = nn.Embedding(2, d_model)
+            nn.init.normal_(self.goal_flag_embed.weight, std=0.02)
+
     def forward(
         self,
         class_idx: torch.Tensor,
         obj_pos: torch.Tensor,
         agent_pos: torch.Tensor,
         obj_mask: torch.Tensor,
+        goal_class: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B = class_idx.shape[0]
 
         obj_feat = self.input_embed(class_idx)
-        cls_feat = self.cls_token.expand(B, 1, self.d_model)
+
+        use_goal = goal_class is not None and hasattr(self, "goal_flag_embed")
+        if use_goal:
+            # Option B: tag goal-class objects with a learned bias.
+            is_goal = (class_idx == goal_class.unsqueeze(1)) & obj_mask
+            obj_feat = obj_feat + self.goal_flag_embed(is_goal.long())
+            # Option A: bias the CLS query with the goal-class embedding so
+            # the cross-attention is goal-aware from layer 1.
+            cls_feat = (
+                self.cls_token.expand(B, 1, self.d_model)
+                + self.input_embed(goal_class).unsqueeze(1)
+            )
+        else:
+            cls_feat = self.cls_token.expand(B, 1, self.d_model)
+
         cls_pos = agent_pos.unsqueeze(1)
 
         scene_scale = None
@@ -300,6 +329,13 @@ class ObjectCloudEncoder(nn.Module):
     each row is ``[class_idx, x, y, z]`` in agent-frame coordinates, with
     padding rows having ``class_idx < 0``. Produces ``(B, out_dim)``.
 
+    Optional goal conditioning (enabled with ``use_goal_conditioning=True``
+    at construction): callers may pass a ``goal_class: (B,) int64`` tensor
+    to ``forward`` to bias the encoder toward goal-relevant objects. See
+    :class:`SimpleObjectCloudEncoder` for details. When the flag is off (or
+    no ``goal_class`` is supplied) the encoder behaves bit-identically to
+    the pre-goal-conditioning version.
+
     Empty-cloud handling: when a sample has no valid objects, we make slot 0
     "valid" with a clamped class id (0) only so the per-channel softmax
     inside ``VectorAttention`` is well-defined, then multiply the encoder
@@ -318,6 +354,7 @@ class ObjectCloudEncoder(nn.Module):
         rpe_mode: RPEMode = "log_distance",
         ffn_expansion: int = 2,
         dropout: float = 0.0,
+        use_goal_conditioning: bool = False,
     ):
         super().__init__()
         self.out_dim = out_dim
@@ -329,10 +366,20 @@ class ObjectCloudEncoder(nn.Module):
             rpe_mode=rpe_mode,
             ffn_expansion=ffn_expansion,
             dropout=dropout,
+            use_goal_conditioning=use_goal_conditioning,
         )
 
-    def forward(self, packed: torch.Tensor) -> torch.Tensor:
-        """``packed``: ``(B, MAX_OBJECTS, 4) float32``."""
+    def forward(
+        self,
+        packed: torch.Tensor,
+        goal_class: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """``packed``: ``(B, MAX_OBJECTS, 4) float32``.
+
+        ``goal_class``: optional ``(B,) int64`` tensor of the active goal
+        category per sample. Only used when the encoder was constructed
+        with ``use_goal_conditioning=True``.
+        """
         if packed.dim() != 3 or packed.size(-1) != 4:
             raise ValueError(
                 f"ObjectCloudEncoder expects (B, MAX_OBJECTS, 4); got {tuple(packed.shape)}"
@@ -359,6 +406,7 @@ class ObjectCloudEncoder(nn.Module):
             obj_pos=pos,
             agent_pos=agent_pos,
             obj_mask=safe_mask,
+            goal_class=goal_class.long() if goal_class is not None else None,
         )
 
         # Zero out empty samples (and their gradient through this multiply).

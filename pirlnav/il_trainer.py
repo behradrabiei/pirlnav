@@ -53,6 +53,27 @@ from pirlnav.algos.agent import DDPILAgent
 from pirlnav.common.rollout_storage import RolloutStorage
 
 
+def _drop_replay_teleport(action_space):
+    """Return a copy of ``action_space`` with ``REPLAY_TELEPORT`` removed.
+
+    The IL trainer appends ``REPLAY_TELEPORT`` to ``TASK.POSSIBLE_ACTIONS``
+    only as an internal teleport hook for rollout collection; the policy
+    never outputs it.  Hiding it from the action space the policy is built
+    against keeps ``is_continuous_action_space`` returning False, keeps
+    ``CategoricalNet`` / ``prev_action_embedding`` sized to the 6 discrete
+    nav actions, and ensures checkpoints stay shape-compatible across
+    pose-replay training, eval, and downstream RL fine-tuning.
+    """
+    from habitat.core.spaces import ActionSpace
+
+    spaces_dict = getattr(action_space, "spaces", None)
+    if spaces_dict is None or "REPLAY_TELEPORT" not in spaces_dict:
+        return action_space
+    return ActionSpace(
+        {k: v for k, v in spaces_dict.items() if k != "REPLAY_TELEPORT"}
+    )
+
+
 @baseline_registry.register_trainer(name="pirlnav-il")
 class ILEnvDDPTrainer(PPOTrainer):
     def __init__(self, config=None):
@@ -77,8 +98,15 @@ class ILEnvDDPTrainer(PPOTrainer):
         self.obs_space = observation_space
 
         policy = baseline_registry.get_policy(self.config.IL.POLICY.name)
+        # Use the (REPLAY_TELEPORT-filtered) policy_action_space so the
+        # discrete-action policy stays sized to the 6 nav actions in
+        # pose-replay mode.  REPLAY_TELEPORT is dispatched internally by
+        # _compute_actions_and_step_envs and never output by the policy.
+        policy_action_space = _drop_replay_teleport(
+            getattr(self, "policy_action_space", self.envs.action_spaces[0])
+        )
         self.actor_critic = policy.from_config(
-            self.config, observation_space, self.envs.action_spaces[0]
+            self.config, observation_space, policy_action_space
         )
         self.actor_critic.to(self.device)
 
@@ -92,6 +120,7 @@ class ILEnvDDPTrainer(PPOTrainer):
             max_grad_norm=il_cfg.max_grad_norm,
             wd=il_cfg.wd,
             entropy_coef=il_cfg.entropy_coef,
+            compass_aux_coef=getattr(il_cfg, "compass_aux_coef", 0.0),
         )
 
     def _init_train(self):
@@ -105,11 +134,34 @@ class ILEnvDDPTrainer(PPOTrainer):
         if is_slurm_batch_job():
             add_signal_handlers()
 
-        # Add replay sensors
-        self.config.defrost()
-        self.config.TASK_CONFIG.TASK.SENSORS.extend(
-            ["DEMONSTRATION_SENSOR", "INFLECTION_WEIGHT_SENSOR"]
+        # Add replay sensors.  In pose-replay mode we also surface the
+        # recorded next-step agent_state as an observation and register
+        # the REPLAY_TELEPORT task action used by
+        # _compute_actions_and_step_envs to advance the env without
+        # stepping sim physics.  All extensions are idempotent so resume
+        # from a checkpoint (whose config already carries these entries)
+        # is a no-op rather than producing duplicates.
+        self._replay_mode = self.config.IL.BehaviorCloning.REPLAY_MODE
+        assert self._replay_mode in ("poses", "actions"), (
+            f"IL.BehaviorCloning.REPLAY_MODE must be 'poses' or 'actions',"
+            f" got {self._replay_mode!r}"
         )
+        self.config.defrost()
+        sensors_list = self.config.TASK_CONFIG.TASK.SENSORS
+        extra_sensors = ["DEMONSTRATION_SENSOR", "INFLECTION_WEIGHT_SENSOR"]
+        if self._replay_mode == "poses":
+            extra_sensors.append("NEXT_POSE_SENSOR")
+        for name in extra_sensors:
+            if name not in sensors_list:
+                sensors_list.append(name)
+        if (
+            self._replay_mode == "poses"
+            and "REPLAY_TELEPORT"
+            not in self.config.TASK_CONFIG.TASK.POSSIBLE_ACTIONS
+        ):
+            self.config.TASK_CONFIG.TASK.POSSIBLE_ACTIONS.append(
+                "REPLAY_TELEPORT"
+            )
         self.config.freeze()
 
         if self._is_distributed:
@@ -150,7 +202,7 @@ class ILEnvDDPTrainer(PPOTrainer):
 
         self._init_envs()
 
-        action_space = self.envs.action_spaces[0]
+        action_space = _drop_replay_teleport(self.envs.action_spaces[0])
         self.policy_action_space = action_space
 
         if is_continuous_action_space(action_space):
@@ -261,16 +313,44 @@ class ILEnvDDPTrainer(PPOTrainer):
         # For backwards compatibility, we also call .item() to convert to
         # an int
         actions = actions.to(device="cpu")
+
+        # In pose-replay mode we also need the next-step recorded agent
+        # pose; pull it once per buffer and dispatch a REPLAY_TELEPORT
+        # task action per env (except on the terminal STOP, which we
+        # forward unchanged so habitat-lab's StopAction can flip
+        # is_stop_called -> _episode_over and let the worker auto-reset).
+        next_poses_cpu = None
+        if self._replay_mode == "poses":
+            next_poses_cpu = (
+                step_batch["observations"]["next_pose"].to(device="cpu").numpy()
+            )
+
         self.pth_time += time.time() - t_sample_action
 
         profiling_wrapper.range_pop()  # compute actions
 
         t_step_env = time.time()
 
-        for index_env, act in zip(
-            range(env_slice.start, env_slice.stop), actions.unbind(0)
+        for buffer_pos, (index_env, act) in enumerate(
+            zip(range(env_slice.start, env_slice.stop), actions.unbind(0))
         ):
-            if act.shape[0] > 1:
+            if self._replay_mode == "poses" and act.item() != 0:
+                # NB: outer "action" wrapping matches the convention used by
+                # VectorEnv.async_step_at for int/str payloads (see
+                # habitat-lab/habitat/core/vector_env.py); the worker does
+                # ``env.step(**data)`` so the inner dict is what reaches
+                # Env.step as its ``action`` argument.
+                pose = next_poses_cpu[buffer_pos]
+                step_action = {
+                    "action": {
+                        "action": "REPLAY_TELEPORT",
+                        "action_args": {
+                            "position": pose[:3].tolist(),
+                            "rotation": pose[3:].tolist(),
+                        },
+                    }
+                }
+            elif act.shape[0] > 1:
                 step_action = action_array_to_dict(
                     self.policy_action_space, act
                 )
@@ -296,6 +376,7 @@ class ILEnvDDPTrainer(PPOTrainer):
             rnn_hidden_states,
             dist_entropy,
             _,
+            compass_loss,
         ) = self.agent.update(self.rollouts)
 
         self.rollouts.after_update(rnn_hidden_states)
@@ -304,6 +385,7 @@ class ILEnvDDPTrainer(PPOTrainer):
         return (
             action_loss,
             dist_entropy,
+            compass_loss,
         )
 
     @profiling_wrapper.RangeContext("train")
@@ -437,6 +519,7 @@ class ILEnvDDPTrainer(PPOTrainer):
                 (
                     action_loss,
                     dist_entropy,
+                    compass_loss,
                 ) = self._update_agent()
 
                 if il_cfg.use_linear_lr_decay:
@@ -447,6 +530,7 @@ class ILEnvDDPTrainer(PPOTrainer):
                     dict(
                         action_loss=action_loss,
                         entropy=dist_entropy,
+                        compass_loss=compass_loss,
                     ),
                     count_steps_delta,
                 )
@@ -606,7 +690,13 @@ class ILEnvDDPTrainer(PPOTrainer):
 
         self._init_envs(config)
 
-        action_space = self.envs.action_spaces[0]
+        # Defensive: if the merged eval config still carries
+        # REPLAY_TELEPORT in POSSIBLE_ACTIONS (e.g. someone forced
+        # USE_CKPT_CONFIG with a custom merge), strip it from the
+        # policy_action_space so the policy we construct here matches the
+        # shape of the saved state_dict (which was trained with the action
+        # filtered out).
+        action_space = _drop_replay_teleport(self.envs.action_spaces[0])
         if self.using_velocity_ctrl:
             # For navigation using a continuous action space for a task that
             # may be asking for discrete actions
@@ -718,6 +808,15 @@ class ILEnvDDPTrainer(PPOTrainer):
                 infer_time_total += time.time() - _t_act
                 infer_steps += self.envs.num_envs
 
+                # Snapshot any auxiliary tensors the policy produced on this
+                # forward (e.g. compass_pred for the compass-aux variants) so
+                # we can render them in the eval video without re-running the
+                # net.  Empty dict for policies that don't populate _last_aux.
+                aux_snapshot: Dict[str, torch.Tensor] = {
+                    k: v.detach()
+                    for k, v in self.actor_critic.get_last_aux().items()
+                }
+
                 prev_actions.copy_(actions)  # type: ignore
             # NB: Move actions to CPU.  If CUDA tensors are
             # sent in to env.step(), that will create CUDA contexts
@@ -812,9 +911,19 @@ class ILEnvDDPTrainer(PPOTrainer):
                 # episode continues
                 elif len(self.config.VIDEO_OPTION) > 0:
                     # TODO move normalization / channel changing out of the policy and undo it here
-                    frame = observations_to_image(
-                        {k: v[i] for k, v in batch.items()}, infos[i]
-                    )
+                    per_env_obs = {k: v[i] for k, v in batch.items()}
+                    # Inject the policy's compass prediction as a pseudo-
+                    # observation so observations_to_image can render it as
+                    # an extra panel.  NOTE: compass_pred corresponds to the
+                    # pre-step batch that drove act(), while the rest of the
+                    # frame is built from the post-step batch.  The resulting
+                    # one-step lag is visually negligible (per-step pose
+                    # changes are 30deg or 0.25m) and avoids an extra forward
+                    # pass per frame.
+                    compass_pred_batch = aux_snapshot.get("compass_pred")
+                    if compass_pred_batch is not None and i < compass_pred_batch.shape[0]:
+                        per_env_obs["compass_pred"] = compass_pred_batch[i]
+                    frame = observations_to_image(per_env_obs, infos[i])
                     if self.config.VIDEO_RENDER_ALL_INFO:
                         frame = overlay_frame(frame, infos[i])
 
