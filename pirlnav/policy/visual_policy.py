@@ -225,6 +225,7 @@ class ObjectNavILMAENet(Net):
                 out_dim=oc_embed_dim,
                 num_layers=int(oc_cfg.num_layers),
                 rpe_mode=str(oc_cfg.rpe_mode),
+                ffn_expansion=int(oc_cfg.ffn_expansion),
             )
             rnn_input_size += oc_embed_dim
             logger.info(

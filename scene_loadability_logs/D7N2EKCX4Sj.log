@@ -1,0 +1,13 @@
+[test_scene_replay] D7N2EKCX4Sj: content/D7N2EKCX4Sj.json.gz OK (1296 episodes, 1296 with reference_replay)
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+2026-05-18 20:10:55,988 Initializing dataset ObjectNav-v2
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+2026-05-18 20:10:59,634 Initializing dataset ObjectNav-v2
+2026-05-18 20:11:05,123 initializing sim Sim-v0
+2026-05-18 20:11:21,114 Initializing task ObjectNav-v2
+[test_scene_replay] D7N2EKCX4Sj: env constructed in 25.4s
+[test_scene_replay] D7N2EKCX4Sj: PASS ep=398 cat=shower steps=421/422 done=True succ=0 d2g=24.260m construct=25.4s step=9.3s

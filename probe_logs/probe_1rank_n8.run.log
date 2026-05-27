@@ -1,0 +1,985 @@
+========== N=8 ==========
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+2026-05-18 19:29:31,859 Using TASK_CONFIG.SEED 100
+2026-05-18 19:29:32,414 config: BASE_TASK_CONFIG_PATH: configs/tasks/objectnav_mp3d_object_cloud_full.yaml
+CHECKPOINT_FOLDER: data/new_checkpoints_dinov2_object_cloud_full/probe_1rank_n8/
+CHECKPOINT_INTERVAL: -1
+CMD_TRAILING_OPTS: ['TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS', '5000', 'TENSORBOARD_DIR', 'tb/objectnav_il/probe_1rank_n8/', 'CHECKPOINT_FOLDER', 'data/new_checkpoints_dinov2_object_cloud_full/probe_1rank_n8/', 'NUM_UPDATES', '5', 'NUM_ENVIRONMENTS', '8', 'NUM_CHECKPOINTS', '1', 'TASK_CONFIG.SIMULATOR.SCENE_DATASET', 'data/scene_datasets/mp3d/mp3d.scene_dataset_config.json', 'TASK_CONFIG.TASK.INFLECTION_WEIGHT_SENSOR.INFLECTION_COEF', '3.513870128085', 'TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR.MAX_OBJECTS', '300']
+ENV_NAME: SimpleRLEnv
+EVAL:
+  EVAL_FREQ: 5
+  SHOULD_LOAD_CKPT: True
+  SPLIT: train
+  USE_CKPT_CONFIG: True
+  VIDEO_FAILED_ONLY: False
+EVAL_CKPT_PATH_DIR: data/new_checkpoints_dinov2_object_cloud_full
+EVAL_KEYS_TO_INCLUDE_IN_NAME: ['success', 'spl']
+FORCE_BLIND_POLICY: False
+FORCE_TORCH_SINGLE_THREADED: True
+IL:
+  BehaviorCloning:
+    clip_param: 0.2
+    encoder_lr: 0.001
+    entropy_coef: 0.0
+    eps: 1e-05
+    hidden_size: 2048
+    lr: 0.001
+    max_grad_norm: 0.2
+    num_mini_batch: 2
+    num_steps: 64
+    reward_window_size: 50
+    sync_frac: 0.6
+    use_double_buffered_sampler: False
+    use_linear_clip_decay: False
+    use_linear_lr_decay: True
+    wd: 0.0
+  POLICY:
+    USE_IW: True
+    distrib_backend: NCCL
+    name: ObjectNavILMAEPolicy
+LOG_FILE: data/train.log
+LOG_INTERVAL: 10
+NUM_CHECKPOINTS: 1
+NUM_ENVIRONMENTS: 8
+NUM_PROCESSES: -1
+NUM_UPDATES: 5
+ORBSLAM2:
+  ANGLE_TH: 0.2617993877991494
+  BETA: 100
+  CAMERA_HEIGHT: 1.25
+  DEPTH_DENORM: 10.0
+  DIST_REACHED_TH: 0.15
+  DIST_TO_STOP: 0.05
+  D_OBSTACLE_MAX: 4.0
+  D_OBSTACLE_MIN: 0.1
+  H_OBSTACLE_MAX: 1.25
+  H_OBSTACLE_MIN: 0.375
+  MAP_CELL_SIZE: 0.1
+  MAP_SIZE: 40
+  MIN_PTS_IN_OBSTACLE: 320.0
+  NEXT_WAYPOINT_TH: 0.5
+  NUM_ACTIONS: 3
+  PLANNER_MAX_STEPS: 500
+  PREPROCESS_MAP: True
+  SLAM_SETTINGS_PATH: habitat_baselines/slambased/data/mp3d3_small1k.yaml
+  SLAM_VOCAB_PATH: habitat_baselines/slambased/data/ORBvoc.txt
+POLICY:
+  CRITIC:
+    hidden_dim: 512
+    mlp_critic: False
+    no_critic: True
+  GOAL_COMPASS_ENCODER:
+    embedding_size: 32
+  MAP_ENCODER:
+    backbone: resnet18
+    embedding_size: 32
+  OBJECT_CLOUD_ENCODER:
+    d_model: 128
+    embedding_size: 64
+    ffn_expansion: 4
+    num_classes: 21
+    num_layers: 4
+    rpe_mode: log_distance
+  RGB_ENCODER:
+    augmentations_name: jitter+shift
+    avgpooled_image: False
+    backbone: dinov2_base
+    dinov2_model_name: facebook/dinov2-base
+    dinov2_output_dim: 768
+    dinov2_resize_h: 476
+    dinov2_resize_w: 630
+    drop_path_rate: 0.0
+    freeze_backbone: False
+    hidden_size: 512
+    image_size: 256
+    normalize_visual_inputs: False
+    pretrained_encoder: None
+    randomize_augmentations_over_envs: False
+    resnet_baseplanes: 32
+    use_augmentations: True
+    use_augmentations_test_time: True
+    vit_global_pool: False
+    vit_mask_ratio: None
+    vit_use_cls: False
+    vit_use_fc_norm: False
+  SEQ2SEQ:
+    use_prev_action: True
+  STATE_ENCODER:
+    hidden_size: 2048
+    num_recurrent_layers: 2
+    rnn_type: GRU
+PROFILING:
+  CAPTURE_START_STEP: -1
+  NUM_STEPS_TO_CAPTURE: -1
+RL:
+  DDPPO:
+    backbone: resnet18
+    distrib_backend: GLOO
+    force_distributed: False
+    num_recurrent_layers: 1
+    pretrained: False
+    pretrained_encoder: False
+    pretrained_weights: data/ddppo-models/gibson-2plus-resnet50.pth
+    reset_critic: True
+    rnn_type: GRU
+    sync_frac: 0.6
+    train_encoder: True
+  Finetune:
+    finetune: True
+    freeze_encoders: True
+    lr: 1.5e-05
+    start_actor_update_at: 100
+    start_actor_warmup_at: 50
+    start_critic_update_at: 80
+    start_critic_warmup_at: 20
+  POLICY:
+    ACTION_DIST:
+      action_activation: tanh
+      clamp_std: True
+      max_log_std: 2
+      max_std: 1
+      min_log_std: -5
+      min_std: 1e-06
+      use_log_std: True
+      use_softplus: False
+      use_std_param: False
+    OBS_TRANSFORMS:
+      CENTER_CROPPER:
+        HEIGHT: 256
+        WIDTH: 256
+      CUBE2EQ:
+        HEIGHT: 256
+        SENSOR_UUIDS: []
+        WIDTH: 512
+      CUBE2FISH:
+        FOV: 180
+        HEIGHT: 256
+        PARAMS: (0.2, 0.2, 0.2)
+        SENSOR_UUIDS: []
+        WIDTH: 256
+      ENABLED_TRANSFORMS: ()
+      EQ2CUBE:
+        HEIGHT: 256
+        SENSOR_UUIDS: []
+        WIDTH: 256
+      RESIZE_SHORTEST_EDGE:
+        SIZE: 256
+    action_distribution_type: categorical
+    name: ObjectNavILMAEPolicy
+  PPO:
+    clip_param: 0.2
+    entropy_coef: 0.01
+    eps: 1e-05
+    gamma: 0.99
+    hidden_size: 2048
+    lr: 0.00025
+    max_grad_norm: 0.5
+    num_mini_batch: 2
+    num_steps: 5
+    ppo_epoch: 4
+    reward_window_size: 50
+    tau: 0.95
+    use_double_buffered_sampler: False
+    use_gae: True
+    use_linear_clip_decay: False
+    use_linear_lr_decay: True
+    use_normalized_advantage: False
+    value_loss_coef: 0.5
+  SLACK_REWARD: -0.001
+  SUCCESS_REWARD: 2.5
+  preemption:
+    append_slurm_job_id: False
+    save_resume_state_interval: 100
+    save_state_batch_only: False
+RUN_TYPE: train
+SENSORS: ['RGB_SENSOR', 'DEPTH_SENSOR', 'SEMANTIC_SENSOR']
+SIMULATOR_GPU_ID: 0
+TASK_CONFIG:
+  DATASET:
+    CONTENT_SCENES: ['*']
+    DATA_PATH: data/datasets/objectnav/objectnav_mp3d/objectnav_mp3d_thda_70k_21cat/{split}/{split}.json.gz
+    MAX_EPISODE_STEPS: 500
+    SCENES_DIR: data/scene_datasets/
+    SPLIT: train
+    TYPE: ObjectNav-v2
+  ENVIRONMENT:
+    ITERATOR_OPTIONS:
+      CYCLE: True
+      GROUP_BY_SCENE: True
+      MAX_SCENE_REPEAT_EPISODES: -1
+      MAX_SCENE_REPEAT_STEPS: 5000
+      NUM_EPISODE_SAMPLE: -1
+      SHUFFLE: True
+      STEP_REPETITION_RANGE: 0.2
+    MAX_EPISODE_SECONDS: 10000000
+    MAX_EPISODE_STEPS: 500
+  GYM:
+    ACHIEVED_GOAL_KEYS: []
+    ACTION_KEYS: None
+    AUTO_NAME: 
+    CLASS_NAME: RearrangeRLEnv
+    DESIRED_GOAL_KEYS: []
+    FIX_INFO_DICT: True
+    OBS_KEYS: None
+  PYROBOT:
+    BASE_CONTROLLER: proportional
+    BASE_PLANNER: none
+    BUMP_SENSOR:
+      TYPE: PyRobotBumpSensor
+    DEPTH_SENSOR:
+      CENTER_CROP: False
+      HEIGHT: 480
+      MAX_DEPTH: 5.0
+      MIN_DEPTH: 0.0
+      NORMALIZE_DEPTH: True
+      TYPE: PyRobotDepthSensor
+      WIDTH: 640
+    LOCOBOT:
+      ACTIONS: ['BASE_ACTIONS', 'CAMERA_ACTIONS']
+      BASE_ACTIONS: ['go_to_relative', 'go_to_absolute']
+      CAMERA_ACTIONS: ['set_pan', 'set_tilt', 'set_pan_tilt']
+    RGB_SENSOR:
+      CENTER_CROP: False
+      HEIGHT: 480
+      TYPE: PyRobotRGBSensor
+      WIDTH: 640
+    ROBOT: locobot
+    ROBOTS: ['locobot']
+    SENSORS: ['RGB_SENSOR', 'DEPTH_SENSOR', 'BUMP_SENSOR']
+  SEED: 100
+  SIMULATOR:
+    ACTION_SPACE_CONFIG: v1
+    AC_FREQ_RATIO: 4
+    ADDITIONAL_OBJECT_PATHS: []
+    AGENTS: ['AGENT_0']
+    AGENT_0:
+      HEIGHT: 0.88
+      IS_SET_START_STATE: False
+      RADIUS: 0.18
+      SENSORS: ['RGB_SENSOR', 'DEPTH_SENSOR', 'SEMANTIC_SENSOR']
+      START_POSITION: [0, 0, 0]
+      START_ROTATION: [0, 0, 0, 1]
+    ARM_DEPTH_SENSOR:
+      HEIGHT: 480
+      HFOV: 90
+      MAX_DEPTH: 10.0
+      MIN_DEPTH: 0.0
+      NORMALIZE_DEPTH: True
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 1.25, 0]
+      SENSOR_SUBTYPE: PINHOLE
+      TYPE: HabitatSimDepthSensor
+      UUID: robot_arm_depth
+      WIDTH: 640
+    ARM_REST: [0.6, 0.0, 0.9]
+    ARM_RGB_SENSOR:
+      HEIGHT: 480
+      HFOV: 90
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 1.25, 0]
+      SENSOR_SUBTYPE: PINHOLE
+      TYPE: HabitatSimRGBSensor
+      UUID: robot_arm_rgb
+      WIDTH: 640
+    AUTO_SLEEP: False
+    CONCUR_RENDER: False
+    CREATE_RENDERER: False
+    CTRL_FREQ: 120.0
+    DEBUG_RENDER: False
+    DEBUG_RENDER_GOAL: True
+    DEFAULT_AGENT_ID: 0
+    DEPTH_SENSOR:
+      HEIGHT: 480
+      HFOV: 79
+      MAX_DEPTH: 5.0
+      MIN_DEPTH: 0.5
+      NORMALIZE_DEPTH: False
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 0.88, 0]
+      SENSOR_SUBTYPE: PINHOLE
+      TYPE: HabitatSimDepthSensor
+      WIDTH: 640
+    EE_LINK_NAME: None
+    EQUIRECT_DEPTH_SENSOR:
+      HEIGHT: 480
+      MAX_DEPTH: 10.0
+      MIN_DEPTH: 0.0
+      NORMALIZE_DEPTH: True
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 1.25, 0]
+      TYPE: HabitatSimEquirectangularDepthSensor
+      WIDTH: 640
+    EQUIRECT_RGB_SENSOR:
+      HEIGHT: 480
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 1.25, 0]
+      TYPE: HabitatSimEquirectangularRGBSensor
+      WIDTH: 640
+    EQUIRECT_SEMANTIC_SENSOR:
+      HEIGHT: 480
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 1.25, 0]
+      TYPE: HabitatSimEquirectangularSemanticSensor
+      WIDTH: 640
+    FISHEYE_DEPTH_SENSOR:
+      ALPHA: 0.57
+      FOCAL_LENGTH: [364.84, 364.86]
+      HEIGHT: 480
+      MAX_DEPTH: 10.0
+      MIN_DEPTH: 0.0
+      NORMALIZE_DEPTH: True
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 1.25, 0]
+      PRINCIPAL_POINT_OFFSET: None
+      SENSOR_MODEL_TYPE: DOUBLE_SPHERE
+      TYPE: HabitatSimFisheyeDepthSensor
+      WIDTH: 640
+      XI: -0.27
+    FISHEYE_RGB_SENSOR:
+      ALPHA: 0.57
+      FOCAL_LENGTH: [364.84, 364.86]
+      HEIGHT: 640
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 1.25, 0]
+      PRINCIPAL_POINT_OFFSET: None
+      SENSOR_MODEL_TYPE: DOUBLE_SPHERE
+      TYPE: HabitatSimFisheyeRGBSensor
+      WIDTH: 640
+      XI: -0.27
+    FISHEYE_SEMANTIC_SENSOR:
+      ALPHA: 0.57
+      FOCAL_LENGTH: [364.84, 364.86]
+      HEIGHT: 640
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 1.25, 0]
+      PRINCIPAL_POINT_OFFSET: None
+      SENSOR_MODEL_TYPE: DOUBLE_SPHERE
+      TYPE: HabitatSimFisheyeSemanticSensor
+      WIDTH: 640
+      XI: -0.27
+    FORWARD_STEP_SIZE: 0.25
+    GRASP_IMPULSE: 1000.0
+    HABITAT_SIM_V0:
+      ALLOW_SLIDING: False
+      ENABLE_PHYSICS: False
+      FRUSTUM_CULLING: True
+      GPU_DEVICE_ID: 0
+      GPU_GPU: False
+      LEAVE_CONTEXT_WITH_BACKGROUND_RENDERER: False
+      PHYSICS_CONFIG_FILE: ./data/default.physics_config.json
+    HEAD_DEPTH_SENSOR:
+      HEIGHT: 480
+      HFOV: 90
+      MAX_DEPTH: 10.0
+      MIN_DEPTH: 0.0
+      NORMALIZE_DEPTH: True
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 1.25, 0]
+      SENSOR_SUBTYPE: PINHOLE
+      TYPE: HabitatSimDepthSensor
+      UUID: robot_head_depth
+      WIDTH: 640
+    HEAD_RGB_SENSOR:
+      HEIGHT: 480
+      HFOV: 90
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 1.25, 0]
+      SENSOR_SUBTYPE: PINHOLE
+      TYPE: HabitatSimRGBSensor
+      UUID: robot_head_rgb
+      WIDTH: 640
+    HOLD_THRESH: 0.09
+    IK_ARM_URDF: data/robots/hab_fetch/robots/fetch_onlyarm.urdf
+    LAG_OBSERVATIONS: 0
+    LOAD_OBJS: False
+    NEEDS_MARKERS: True
+    REQUIRES_TEXTURES: True
+    RGB_SENSOR:
+      HEIGHT: 480
+      HFOV: 79
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 0.88, 0]
+      SENSOR_SUBTYPE: PINHOLE
+      TYPE: HabitatSimRGBSensor
+      WIDTH: 640
+    ROBOT_JOINT_START_NOISE: 0.0
+    ROBOT_TYPE: FetchRobot
+    ROBOT_URDF: data/robots/hab_fetch/robots/hab_fetch.urdf
+    SCENE: data/scene_datasets/habitat-test-scenes/van-gogh-room.glb
+    SCENE_DATASET: data/scene_datasets/mp3d/mp3d.scene_dataset_config.json
+    SEED: 100
+    SEMANTIC_SENSOR:
+      HEIGHT: 480
+      HFOV: 79
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 0.88, 0]
+      SENSOR_SUBTYPE: PINHOLE
+      TYPE: HabitatSimSemanticSensor
+      WIDTH: 640
+    STEP_PHYSICS: True
+    THIRD_DEPTH_SENSOR:
+      HEIGHT: 480
+      HFOV: 90
+      MAX_DEPTH: 10.0
+      MIN_DEPTH: 0.0
+      NORMALIZE_DEPTH: True
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 1.25, 0]
+      SENSOR_SUBTYPE: PINHOLE
+      TYPE: HabitatSimDepthSensor
+      UUID: robot_third_rgb
+      WIDTH: 640
+    THIRD_RGB_SENSOR:
+      HEIGHT: 480
+      HFOV: 90
+      ORIENTATION: [0.0, 0.0, 0.0]
+      POSITION: [0, 1.25, 0]
+      SENSOR_SUBTYPE: PINHOLE
+      TYPE: HabitatSimRGBSensor
+      UUID: robot_third_rgb
+      WIDTH: 640
+    TILT_ANGLE: 30
+    TURN_ANGLE: 30
+    TYPE: Sim-v0
+    UPDATE_ROBOT: True
+  TASK:
+    ABS_GOAL_SENSOR:
+      DIMENSIONALITY: 3
+      GOAL_FORMAT: CARTESIAN
+      TYPE: AbsGoalSensor
+    ABS_TARGET_START_SENSOR:
+      DIMENSIONALITY: 3
+      GOAL_FORMAT: CARTESIAN
+      TYPE: AbsTargetStartSensor
+    ACTIONS:
+      ANSWER:
+        TYPE: AnswerAction
+      ARM_ACTION:
+        ARM_CONTROLLER: ArmRelPosAction
+        ARM_JOINT_DIMENSIONALITY: 7
+        DELTA_POS_LIMIT: 0.0125
+        DISABLE_GRIP: False
+        EE_CTRL_LIM: 0.015
+        GRASP_THRESH_DIST: 0.15
+        GRIP_CONTROLLER: None
+        ORACLE_GRASP: False
+        RENDER_EE_TARGET: False
+        SHOULD_CLIP: False
+        TYPE: ArmAction
+      BASE_VELOCITY:
+        ALLOW_BACK: True
+        ALLOW_DYN_SLIDE: True
+        ANG_SPEED: 12.0
+        END_ON_STOP: False
+        LIN_SPEED: 12.0
+        MIN_ABS_ANG_SPEED: 1.0
+        MIN_ABS_LIN_SPEED: 1.0
+        TYPE: BaseVelAction
+      EMPTY:
+        TYPE: EmptyAction
+      LOOK_DOWN:
+        TYPE: LookDownAction
+      LOOK_UP:
+        TYPE: LookUpAction
+      MOVE_FORWARD:
+        TYPE: MoveForwardAction
+      REARRANGE_STOP:
+        TYPE: RearrangeStopAction
+      STOP:
+        TYPE: StopAction
+      TELEPORT:
+        TYPE: TeleportAction
+      TURN_LEFT:
+        TYPE: TurnLeftAction
+      TURN_RIGHT:
+        TYPE: TurnRightAction
+      VELOCITY_CONTROL:
+        ANG_VEL_RANGE: [-10.0, 10.0]
+        LIN_VEL_RANGE: [0.0, 0.25]
+        MIN_ABS_ANG_SPEED: 1.0
+        MIN_ABS_LIN_SPEED: 0.025
+        TIME_STEP: 1.0
+        TYPE: VelocityAction
+    ANSWER_ACCURACY:
+      TYPE: AnswerAccuracy
+    ART_JOINT_SENSOR:
+      TYPE: ArtJointSensor
+    ART_JOINT_SENSOR_NO_VEL:
+      TYPE: ArtJointSensorNoVel
+    ART_OBJ_AT_DESIRED_STATE:
+      SUCCESS_DIST_THRESHOLD: 0.05
+      TYPE: ArtObjAtDesiredState
+      USE_ABSOLUTE_DISTANCE: True
+    ART_OBJ_REWARD:
+      ART_AT_DESIRED_STATE_REWARD: 5.0
+      ART_DIST_REWARD: 10.0
+      CONSTRAINT_VIOLATE_PEN: 10.0
+      DIST_REWARD: 1.0
+      EE_DIST_REWARD: 10.0
+      FORCE_END_PEN: 10.0
+      FORCE_PEN: 0.0
+      GRASP_REWARD: 0.0
+      MARKER_DIST_REWARD: 0.0
+      MAX_FORCE_PEN: 1.0
+      TYPE: ArtObjReward
+      WRONG_GRASP_END: False
+      WRONG_GRASP_PEN: 5.0
+    ART_OBJ_STATE:
+      TYPE: ArtObjState
+    ART_OBJ_SUCCESS:
+      REST_DIST_THRESHOLD: 0.15
+      TYPE: ArtObjSuccess
+    ART_SUCC_THRESH: 0.15
+    BAD_CALLED_TERMINATE:
+      BAD_TERM_PEN: 0.0
+      DECAY_BAD_TERM: False
+      TYPE: BadCalledTerminate
+    BASE_ANGLE_NOISE: 0.15
+    BASE_NOISE: 0.05
+    CACHED_DINOV2_SENSOR:
+      CACHE_ROOT: data/dinov2_cache
+      FEATURE_DIM: 768
+      LRU_SIZE: 32
+      TYPE: CachedDINOv2Sensor
+    CACHED_DINOV2_SENSOR_UUID: cached_dinov2_feature
+    COLLISIONS:
+      TYPE: Collisions
+    COMPASS_SENSOR:
+      TYPE: CompassSensor
+    COMPOSITE_BAD_CALLED_TERMINATE:
+      TYPE: CompositeBadCalledTerminate
+    COMPOSITE_NODE_IDX:
+      TYPE: CompositeNodeIdx
+    COMPOSITE_REWARD:
+      STAGE_COMPLETE_REWARD: 10.0
+      SUCCESS_REWARD: 10.0
+      TYPE: CompositeReward
+    COMPOSITE_SUCCESS:
+      TYPE: CompositeSuccess
+    CONSTRAINT_VIOLATION_ENDS_EPISODE: True
+    CORRECT_ANSWER:
+      TYPE: CorrectAnswer
+    COUNT_OBJ_COLLISIONS: True
+    COUNT_ROBOT_OBJ_COLLS: False
+    DEBUG_GOAL_POINT: True
+    DEBUG_SKIP_TO_NODE: -1
+    DEMONSTRATION_SENSOR:
+      TYPE: DemonstrationSensor
+    DEMONSTRATION_SENSOR_UUID: next_actions
+    DESIRED_RESTING_POSITION: []
+    DID_PICK_OBJECT:
+      TYPE: DidPickObjectMeasure
+    DID_VIOLATE_HOLD_CONSTRAINT:
+      TYPE: DidViolateHoldConstraintMeasure
+    DISTANCE_TO_GOAL:
+      DISTANCE_TO: VIEW_POINTS
+      TYPE: DistanceToGoal
+    DIST_TO_GOAL:
+      TYPE: DistToGoal
+    DIST_TO_NAV_GOAL:
+      TYPE: DistToNavGoalSensor
+    DOES_WANT_TERMINATE:
+      TYPE: DoesWantTerminate
+    EASY_INIT: False
+    EE_DIST_TO_MARKER:
+      TYPE: EndEffectorDistToMarker
+    EE_EXCLUDE_REGION: 0.0
+    EE_SAMPLE_FACTOR: 0.2
+    EGO_OBJECT_CLOUD_SENSOR:
+      CACHE_ROOT: 
+      MAX_OBJECTS: 300
+      MIN_MASK_PIXELS: 100
+      TYPE: EgoObjectCloudSensor
+    EGO_OBJECT_CLOUD_SENSOR_UUID: ego_object_cloud
+    END_EFFECTOR_SENSOR:
+      TYPE: EEPositionSensor
+    END_EFFECTOR_TO_OBJECT_DISTANCE:
+      TYPE: EndEffectorToObjectDistance
+    END_EFFECTOR_TO_REST_DISTANCE:
+      TYPE: EndEffectorToRestDistance
+    END_ON_SUCCESS: False
+    EPISODE_INFO:
+      TYPE: EpisodeInfo
+    FILTER_NAV_TO_TASKS: []
+    FORCE_REGENERATE: False
+    FORCE_TERMINATE:
+      MAX_ACCUM_FORCE: -1.0
+      TYPE: ForceTerminate
+    GOAL_COMPASS_SENSOR:
+      NUM_BINS: 12
+      TYPE: GoalCompassSensor
+    GOAL_COMPASS_SENSOR_UUID: goal_compass
+    GOAL_SENSOR:
+      DIMENSIONALITY: 3
+      GOAL_FORMAT: CARTESIAN
+      TYPE: GoalSensor
+    GOAL_SENSOR_UUID: objectgoal
+    GPS_SENSOR:
+      DIMENSIONALITY: 2
+      TYPE: GPSSensor
+    HEADING_SENSOR:
+      TYPE: HeadingSensor
+    IMAGEGOAL_SENSOR:
+      TYPE: ImageGoalSensor
+    INFLECTION_WEIGHT_SENSOR:
+      INFLECTION_COEF: 3.513870128085
+      TYPE: InflectionWeightSensor
+    INFLECTION_WEIGHT_SENSOR_UUID: inflection_weight
+    INSTRUCTION_SENSOR:
+      TYPE: InstructionSensor
+    INSTRUCTION_SENSOR_UUID: instruction
+    IS_HOLDING_SENSOR:
+      TYPE: IsHoldingSensor
+    JOINT_MAX_IMPULSE: -1.0
+    JOINT_SENSOR:
+      DIMENSIONALITY: 7
+      TYPE: JointSensor
+    JOINT_VELOCITY_SENSOR:
+      DIMENSIONALITY: 7
+      TYPE: JointVelocitySensor
+    LIMIT_TASK_LEN_SCALING: 0.0
+    LIMIT_TASK_NODE: -1
+    LOCALIZATION_SENSOR:
+      TYPE: LocalizationSensor
+    MARKER_REL_POS_SENSOR:
+      TYPE: MarkerRelPosSensor
+    MAX_COLLISIONS: -1.0
+    MEASUREMENTS: ['DISTANCE_TO_GOAL', 'SUCCESS', 'SPL', 'SOFT_SPL', 'SPARSE_REWARD']
+    MOVE_OBJECTS_REWARD:
+      CONSTRAINT_VIOLATE_PEN: 10.0
+      DIST_REWARD: 1.0
+      FORCE_END_PEN: 10.0
+      FORCE_PEN: 0.001
+      MAX_FORCE_PEN: 1.0
+      PICK_REWARD: 1.0
+      SINGLE_REARRANGE_REWARD: 1.0
+      SUCCESS_DIST: 0.15
+      TYPE: MoveObjectsReward
+    MUST_LOOK_AT_TARG: True
+    NAV_GOAL_SENSOR:
+      TYPE: NavGoalSensor
+    NAV_TO_POS_SUCC:
+      SUCCESS_DISTANCE: 0.2
+      TYPE: NavToPosSucc
+    NAV_TO_SKILL_SENSOR:
+      NUM_SKILLS: 8
+      TYPE: NavToSkillSensor
+    NUM_STEPS:
+      TYPE: NumStepsMeasure
+    OBJECTGOAL_SENSOR:
+      GOAL_SPEC: TASK_CATEGORY_ID
+      GOAL_SPEC_MAX_VAL: 50
+      TYPE: ObjectGoalSensor
+    OBJECT_IN_HAND_SAMPLE_PROB: 0.167
+    OBJECT_SENSOR:
+      DIMENSIONALITY: 3
+      GOAL_FORMAT: CARTESIAN
+      TYPE: TargetCurrentSensor
+    OBJECT_TO_GOAL_DISTANCE:
+      TYPE: ObjectToGoalDistance
+    OBJ_AT_GOAL:
+      SUCC_THRESH: 0.15
+      TYPE: ObjAtGoal
+    OBJ_SUCC_THRESH: 0.3
+    ORACLE_NAV_ACTION_SENSOR:
+      TYPE: OracleNavigationActionSensor
+    PDDL_DOMAIN_DEF: configs/tasks/rearrange/pddl/replica_cad_domain.yaml
+    PICK_REWARD:
+      COLLISION_PENALTY: 0.0
+      COLL_PEN: 1.0
+      CONSTRAINT_VIOLATE_PEN: 10.0
+      DIST_REWARD: 20.0
+      DROP_OBJ_SHOULD_END: False
+      DROP_PEN: 5.0
+      FORCE_END_PEN: 10.0
+      FORCE_PEN: 0.001
+      MAX_ACCUM_FORCE: 5000.0
+      MAX_FORCE_PEN: 1.0
+      PICK_REWARD: 20.0
+      ROBOT_OBJ_COLLISION_PENALTY: 0.0
+      ROBOT_OBJ_COLL_PEN: 0.0
+      SUCC_REWARD: 10.0
+      TYPE: RearrangePickReward
+      USE_DIFF: True
+      WRONG_PICK_PEN: 5.0
+      WRONG_PICK_SHOULD_END: False
+    PICK_SUCCESS:
+      EE_RESTING_SUCCESS_THRESHOLD: 0.15
+      TYPE: RearrangePickSuccess
+    PLACE_REWARD:
+      CONSTRAINT_VIOLATE_PEN: 10.0
+      DIST_REWARD: 20.0
+      DROP_PEN: 5.0
+      FORCE_END_PEN: 10.0
+      FORCE_PEN: 0.001
+      MAX_FORCE_PEN: 1.0
+      PLACE_REWARD: 20.0
+      SUCC_REWARD: 10.0
+      TYPE: PlaceReward
+      USE_DIFF: True
+      WRONG_DROP_SHOULD_END: False
+    PLACE_SUCCESS:
+      EE_RESTING_SUCCESS_THRESHOLD: 0.15
+      TYPE: PlaceSuccess
+    POINTGOAL_SENSOR:
+      DIMENSIONALITY: 2
+      GOAL_FORMAT: POLAR
+      TYPE: PointGoalSensor
+    POINTGOAL_WITH_GPS_COMPASS_SENSOR:
+      DIMENSIONALITY: 2
+      GOAL_FORMAT: POLAR
+      TYPE: PointGoalWithGPSCompassSensor
+    POSSIBLE_ACTIONS: ['STOP', 'MOVE_FORWARD', 'TURN_LEFT', 'TURN_RIGHT', 'LOOK_UP', 'LOOK_DOWN']
+    PROXIMITY_SENSOR:
+      MAX_DETECTION_RADIUS: 2.0
+      TYPE: ProximitySensor
+    QUESTION_SENSOR:
+      TYPE: QuestionSensor
+    REARRANGE_NAV_TO_OBJ_REWARD:
+      ANGLE_DIST_REWARD: 1.0
+      CONSTRAINT_VIOLATE_PEN: 10.0
+      DIST_REWARD: 10.0
+      FORCE_END_PEN: 10.0
+      FORCE_PEN: 0.0
+      MAX_FORCE_PEN: 1.0
+      SHOULD_REWARD_TURN: True
+      TURN_REWARD_DIST: 0.1
+      TYPE: NavToObjReward
+    REARRANGE_NAV_TO_OBJ_SUCCESS:
+      HEURISTIC_STOP: False
+      MUST_CALL_STOP: True
+      MUST_LOOK_AT_TARG: True
+      SUCCESS_ANGLE_DIST: 0.15
+      TYPE: NavToObjSuccess
+    REARRANGE_REACH_REWARD:
+      DIFF_REWARD: True
+      SCALE: 1.0
+      SPARSE_REWARD: False
+      TYPE: RearrangeReachReward
+    REARRANGE_REACH_SUCCESS:
+      SUCC_THRESH: 0.2
+      TYPE: RearrangeReachSuccess
+    RELATIVE_RESTING_POS_SENSOR:
+      TYPE: RelativeRestingPositionSensor
+    RENDER_TARGET: True
+    RESTING_POS_SENSOR:
+      TYPE: RestingPositionSensor
+    REWARD_MEASURE: distance_to_goal
+    REWARD_MEASUREMENT: 
+    ROBOT_COLLS:
+      TYPE: RobotCollisions
+    ROBOT_FORCE:
+      MIN_FORCE: 20.0
+      TYPE: RobotForce
+    ROT_DIST_TO_GOAL:
+      TYPE: RotDistToGoal
+    SEMANTIC_MAP_SENSOR:
+      CACHE_ROOT: 
+      MAP_H: 256
+      MAP_RESOLUTION: 0.025
+      MAP_W: 256
+      SMOOTH_K: 4
+      TYPE: SemanticMapSensor
+      WORLD_DIAMETER_M: 80.0
+    SEMANTIC_MAP_SENSOR_UUID: semantic_map
+    SENSORS: ['OBJECTGOAL_SENSOR', 'COMPASS_SENSOR', 'GPS_SENSOR', 'EGO_OBJECT_CLOUD_SENSOR', 'DEMONSTRATION_SENSOR', 'INFLECTION_WEIGHT_SENSOR']
+    SETTLE_STEPS: 5
+    SHOULD_ENFORCE_TARGET_WITHIN_REACH: False
+    SHOULD_SAVE_TO_CACHE: True
+    SIMPLE_REWARD:
+      ANGLE_SUCCESS_REWARD: 2.5
+      ATG_REWARD_DISTANCE: 1.0
+      SLACK_PENALTY: -0.01
+      SUCCESS_REWARD: 2.5
+      TYPE: SimpleReward
+      USE_ATG_FIX: True
+      USE_ATG_REWARD: True
+      USE_DTG_REWARD: True
+    SINGLE_EVAL_NODE: -1
+    SKIP_NODES: ['move_obj']
+    SLACK_REWARD: -0.01
+    SOFT_SPL:
+      TYPE: SoftSPL
+    SPARSE_REWARD:
+      SUCCESS_REWARD: 2.5
+      TYPE: SparseReward
+    SPAWN_REGION_SCALE: 0.2
+    SPL:
+      TYPE: SPL
+    SUCCESS:
+      SUCCESS_DISTANCE: 0.1
+      TYPE: Success
+    SUCCESS_DISTANCE: 0.1
+    SUCCESS_MEASURE: success
+    SUCCESS_MEASUREMENT: 
+    SUCCESS_REWARD: 2.5
+    SUCCESS_STATE: 0.0
+    TARGET_GOAL_GPS_COMPASS_SENSOR:
+      TYPE: TargetGoalGpsCompassSensor
+    TARGET_START_GPS_COMPASS_SENSOR:
+      TYPE: TargetStartGpsCompassSensor
+    TARGET_START_POINT_GOAL_SENSOR:
+      TYPE: TargetOrGoalStartPointGoalSensor
+    TARGET_START_SENSOR:
+      DIMENSIONALITY: 3
+      GOAL_FORMAT: CARTESIAN
+      TYPE: TargetStartSensor
+    TASK_SPEC: nav_pick
+    TASK_SPEC_BASE_PATH: configs/tasks/rearrange/pddl/
+    TOP_DOWN_MAP:
+      DRAW_BORDER: True
+      DRAW_GOAL_AABBS: True
+      DRAW_GOAL_POSITIONS: True
+      DRAW_SHORTEST_PATH: True
+      DRAW_SOURCE: True
+      DRAW_VIEW_POINTS: True
+      FOG_OF_WAR:
+        DRAW: True
+        FOV: 90
+        VISIBILITY_DIST: 5.0
+      MAP_PADDING: 3
+      MAP_RESOLUTION: 1024
+      MAX_EPISODE_STEPS: 1000
+      TYPE: TopDownMap
+    TYPE: ObjectNav-v2
+    USE_MARKER_T: True
+    USING_SUBTASKS: False
+TENSORBOARD_DIR: tb/objectnav_il/probe_1rank_n8/
+TEST_EPISODE_COUNT: -1
+TORCH_GPU_ID: 0
+TOTAL_NUM_STEPS: -1.0
+TRAINER_NAME: pirlnav-il
+VERBOSE: True
+VIDEO_DIR: video_dir
+VIDEO_FPS: 10
+VIDEO_OPTION: []
+VIDEO_RENDER_ALL_INFO: False
+VIDEO_RENDER_TOP_DOWN: True
+WB:
+  ENTITY: 
+  GROUP: 
+  PROJECT_NAME: 
+  RUN_NAME: 
+WRITER_TYPE: tb
+2026-05-18 19:29:32,414 Initializing dataset ObjectNav-v2
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+2026-05-18 19:29:36,143 Initializing dataset ObjectNav-v2
+2026-05-18 19:29:36,143 Initializing dataset ObjectNav-v2
+2026-05-18 19:29:36,143 Initializing dataset ObjectNav-v2
+2026-05-18 19:29:36,145 Initializing dataset ObjectNav-v2
+2026-05-18 19:29:36,153 Initializing dataset ObjectNav-v2
+2026-05-18 19:29:36,163 Initializing dataset ObjectNav-v2
+2026-05-18 19:29:36,166 Initializing dataset ObjectNav-v2
+2026-05-18 19:29:36,170 Initializing dataset ObjectNav-v2
+2026-05-18 19:30:01,401 initializing sim Sim-v0
+2026-05-18 19:30:06,310 initializing sim Sim-v0
+2026-05-18 19:30:07,336 initializing sim Sim-v0
+2026-05-18 19:30:07,627 initializing sim Sim-v0
+2026-05-18 19:30:07,798 initializing sim Sim-v0
+2026-05-18 19:30:12,264 initializing sim Sim-v0
+2026-05-18 19:30:12,558 initializing sim Sim-v0
+2026-05-18 19:30:14,085 Initializing task ObjectNav-v2
+2026-05-18 19:30:14,554 Initializing task ObjectNav-v2
+2026-05-18 19:30:15,464 initializing sim Sim-v0
+2026-05-18 19:30:15,533 Initializing task ObjectNav-v2
+2026-05-18 19:30:17,252 Initializing task ObjectNav-v2
+2026-05-18 19:30:20,941 Initializing task ObjectNav-v2
+2026-05-18 19:30:23,161 Initializing task ObjectNav-v2
+2026-05-18 19:30:23,704 Initializing task ObjectNav-v2
+2026-05-18 19:30:26,199 Initializing task ObjectNav-v2
+2026-05-18 19:30:27,957 RGB encoder is dinov2_base
+2026-05-18 19:30:27,958 
+
+Setting up GPS sensor
+2026-05-18 19:30:27,958 
+
+Setting up Compass sensor
+2026-05-18 19:30:27,958 Object categories: 21
+2026-05-18 19:30:27,958 
+
+Setting up Object Goal sensor
+2026-05-18 19:30:27,969 
+
+Setting up Ego Object Cloud sensor (MAX_OBJECTS=300 -> 64 dim)
+2026-05-18 19:30:27,969 State enc: 704 - 2048 - GRU - 2
+2026-05-18 19:30:33,538 Visual Encoder params: 0
+2026-05-18 19:30:33,539 Other params: 202
+2026-05-18 19:30:33,539 agent number of parameters: 44501894
+Traceback (most recent call last):
+  File "/opt/conda/envs/pirlnav/lib/python3.9/runpy.py", line 197, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/opt/conda/envs/pirlnav/lib/python3.9/runpy.py", line 87, in _run_code
+    exec(code, run_globals)
+  File "/workspace/pirlnav/run.py", line 90, in <module>
+    main()
+  File "/workspace/pirlnav/run.py", line 40, in main
+    run_exp(**vars(args))
+  File "/workspace/pirlnav/run.py", line 86, in run_exp
+    execute_exp(config, run_type)
+  File "/workspace/pirlnav/run.py", line 69, in execute_exp
+    trainer.train()
+  File "/opt/conda/envs/pirlnav/lib/python3.9/contextlib.py", line 79, in inner
+    return func(*args, **kwds)
+  File "/workspace/pirlnav/pirlnav/il_trainer.py", line 414, in train
+    count_steps_delta += self._collect_environment_result(
+  File "/workspace/pirlnav/habitat-lab/habitat_baselines/rl/ppo/ppo_trainer.py", line 506, in _collect_environment_result
+    outputs = [
+  File "/workspace/pirlnav/habitat-lab/habitat_baselines/rl/ppo/ppo_trainer.py", line 507, in <listcomp>
+    self.envs.wait_step_at(index_env)
+  File "/opt/conda/envs/pirlnav/lib/python3.9/contextlib.py", line 79, in inner
+    return func(*args, **kwds)
+  File "/workspace/pirlnav/habitat-lab/habitat/core/vector_env.py", line 409, in wait_step_at
+    return self._connection_read_fns[index_env]()
+  File "/workspace/pirlnav/habitat-lab/habitat/core/vector_env.py", line 97, in __call__
+    res = self.read_fn()
+  File "/workspace/pirlnav/habitat-lab/habitat/utils/pickle5_multiprocessing.py", line 67, in recv
+    buf = self.recv_bytes()
+  File "/opt/conda/envs/pirlnav/lib/python3.9/multiprocessing/connection.py", line 216, in recv_bytes
+    buf = self._recv_bytes(maxlength)
+  File "/opt/conda/envs/pirlnav/lib/python3.9/multiprocessing/connection.py", line 414, in _recv_bytes
+    buf = self._recv(4)
+  File "/opt/conda/envs/pirlnav/lib/python3.9/multiprocessing/connection.py", line 383, in _recv
+    raise EOFError
+EOFError
+Exception ignored in: <function VectorEnv.__del__ at 0xfff4d46de0d0>
+Traceback (most recent call last):
+  File "/workspace/pirlnav/habitat-lab/habitat/core/vector_env.py", line 592, in __del__
+    self.close()
+  File "/workspace/pirlnav/habitat-lab/habitat/core/vector_env.py", line 460, in close
+    read_fn()
+  File "/workspace/pirlnav/habitat-lab/habitat/core/vector_env.py", line 97, in __call__
+    res = self.read_fn()
+  File "/workspace/pirlnav/habitat-lab/habitat/utils/pickle5_multiprocessing.py", line 67, in recv
+    buf = self.recv_bytes()
+  File "/opt/conda/envs/pirlnav/lib/python3.9/multiprocessing/connection.py", line 216, in recv_bytes
+    buf = self._recv_bytes(maxlength)
+  File "/opt/conda/envs/pirlnav/lib/python3.9/multiprocessing/connection.py", line 414, in _recv_bytes
+    buf = self._recv(4)
+  File "/opt/conda/envs/pirlnav/lib/python3.9/multiprocessing/connection.py", line 383, in _recv
+    raise EOFError
+EOFError: 

@@ -1,4 +1,4 @@
-# PIRLNav Singularity Container
+# PIRLNav Singularity Container for the GreatLake Cluster
 
 This repository uses a dependency-only Singularity/Apptainer image for HPC runs.
 The image does not include the source tree or datasets; clone the repo and stage

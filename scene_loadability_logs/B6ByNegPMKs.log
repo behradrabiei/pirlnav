@@ -1,0 +1,13 @@
+[test_scene_replay] B6ByNegPMKs: content/B6ByNegPMKs.json.gz OK (970 episodes, 970 with reference_replay)
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+2026-05-18 20:09:43,065 Initializing dataset ObjectNav-v2
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+2026-05-18 20:09:46,655 Initializing dataset ObjectNav-v2
+2026-05-18 20:09:52,257 initializing sim Sim-v0
+2026-05-18 20:10:23,577 Initializing task ObjectNav-v2
+[test_scene_replay] B6ByNegPMKs: env constructed in 40.8s
+[test_scene_replay] B6ByNegPMKs: PASS ep=807 cat=chair steps=329/330 done=True succ=0 d2g=12.028m construct=40.8s step=9.9s

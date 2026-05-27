@@ -1,0 +1,203 @@
+Bootstrap: docker
+# Ubuntu 24.04 (glibc 2.39) is required because Delta AI's host driver
+# libraries (libEGL, libcuda, ...) injected via `apptainer exec --nv` are
+# built against glibc >= 2.38. An Ubuntu 22.04 base (glibc 2.35) fails at
+# runtime with `version 'GLIBC_2.38' not found`.
+From: nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04
+
+%labels
+    Author PIRLNav
+    Description Dependency-only headless PIRLNav runtime for NCSA Delta AI (aarch64, GH200)
+
+%help
+    Dependency-only PIRLNav runtime for NCSA Delta AI.
+
+    Targets aarch64 (NVIDIA GH200 / Grace Hopper) compute nodes. The image
+    intentionally does not include the PIRLNav source tree or MP3D assets.
+    Bind a cloned repository at /workspace/pirlnav and run with --nv:
+
+      apptainer exec --nv --bind /path/to/pirlnav:/workspace/pirlnav \
+        --pwd /workspace/pirlnav pirlnav-deltaai.sif \
+        bash scripts/run_il_mp3d_1scene.sh
+
+    See DELTAAI_CONTAINER.md for the full Delta AI workflow (build on the
+    login node with --fakeroot, ghx4 SLURM template, smoke test).
+
+    habitat-sim 0.2.5 is built from source because no aarch64 conda package
+    exists. PyTorch is installed from the cu126 index (Delta AI's recommended
+    CUDA runtime; cu118 wheels do not exist for arm64).
+
+%environment
+    export CONDA_DIR=/opt/conda
+    export CONDA_DEFAULT_ENV=pirlnav
+    export PATH=/opt/conda/envs/pirlnav/bin:/opt/conda/bin:$PATH
+    export PYTHONPATH=/workspace/pirlnav:/workspace/pirlnav/habitat-lab:$PYTHONPATH
+    export LD_LIBRARY_PATH=/opt/conda/envs/pirlnav/lib:$LD_LIBRARY_PATH
+    export PYTHONUNBUFFERED=1
+    export GLOG_minloglevel=2
+    export MAGNUM_LOG=quiet
+    export HABITAT_SIM_LOG=quiet
+    export MPLBACKEND=Agg
+
+%post
+    set -eux
+
+    export DEBIAN_FRONTEND=noninteractive
+    # Disable apt's privilege-drop sandbox. In a rootless Apptainer build
+    # without /etc/subuid mapping, only a single UID exists inside the user
+    # namespace (the user is mapped to root). apt's https method tries to
+    # drop to the _apt user (UID 100) and fails with
+    #   E: setgroups 65534 failed - setgroups (1: Operation not permitted)
+    # Forcing the sandbox user back to root keeps everything as the only
+    # available UID.
+    echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/00-no-sandbox
+
+    apt-get update
+    # libgl1-mesa-glx was retired in Ubuntu 24.04 (replaced by libglx-mesa0,
+    # which is already pulled in transitively by libgl1). It is also only
+    # needed for GUI/Mesa software rendering, which a headless habitat-sim
+    # build does not use, so we drop it entirely.
+    apt-get install -y --no-install-recommends \
+        bash \
+        build-essential \
+        ca-certificates \
+        curl \
+        freeglut3-dev \
+        git \
+        iproute2 \
+        libegl1 \
+        libegl1-mesa-dev \
+        libgl1 \
+        libglib2.0-0 \
+        libglm-dev \
+        libglvnd0 \
+        libglx0 \
+        libjpeg-dev \
+        libsm6 \
+        libx11-6 \
+        libxcb1 \
+        libxext6 \
+        libxrandr2 \
+        libxrender1 \
+        mesa-utils \
+        pkg-config \
+        unzip \
+        wget \
+        xorg-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+    # Pinned Miniforge for reproducibility (aarch64 build).
+    MINIFORGE_VERSION=25.3.0-3
+    curl -fsSL -o /tmp/miniforge.sh \
+        "https://github.com/conda-forge/miniforge/releases/download/${MINIFORGE_VERSION}/Miniforge3-Linux-aarch64.sh"
+    bash /tmp/miniforge.sh -b -p /opt/conda
+    rm /tmp/miniforge.sh
+
+    export PATH=/opt/conda/bin:$PATH
+    conda config --system --set channel_priority strict
+    # No habitat-sim here: aarch64 conda builds do not exist for either the
+    # aihabitat or conda-forge channels, so we build it from source below.
+    # cmake pin notes:
+    #   - Habitat-Sim only requires cmake>=3.10.
+    #   - The exact 3.14.0 pin from the upstream x86 docs is not packaged
+    #     for linux-aarch64 in conda-forge.
+    #   - Habitat-Sim 0.2.5 vendors Corrade (Magnum) with
+    #     `cmake_minimum_required(VERSION <3.5)`, which CMake 4.x rejects.
+    #     Pin to the 3.x line to stay compatible.
+    conda create -y -n pirlnav -c conda-forge \
+        python=3.9 \
+        pip \
+        "cmake>=3.20,<4" \
+        ninja \
+        git
+
+    . /opt/conda/etc/profile.d/conda.sh
+    conda activate pirlnav
+
+    python -m pip install --upgrade pip setuptools wheel
+
+    # Delta AI host driver is CUDA 12.x with forward compatibility; cu126 has
+    # arm64 wheels (cu118 does not). The NVIDIA driver itself is provided by
+    # the host at runtime via `apptainer exec --nv`.
+    #
+    # Pin notes (verified against https://download.pytorch.org/whl/cu126/):
+    #   - On the cu126 index, the ONLY torch wheel for cp39 + linux_aarch64
+    #     is torch-2.6.0. Versions 2.7+ dropped cp39 for arm64. Without a
+    #     hard pin, a newer release that re-adds cp39 with a different ABI
+    #     could either succeed differently or send pip into a multi-hour
+    #     source-build fallback. So pin the exact triple proven to work:
+    #         torch==2.6.0+cu126
+    #         torchvision==0.21.0  (matches torch 2.6, cu126-built on the index)
+    #         torchaudio==2.6.0
+    python -m pip install \
+        --index-url https://download.pytorch.org/whl/cu126 \
+        "torch==2.6.0+cu126" \
+        "torchvision==0.21.0" \
+        "torchaudio==2.6.0"
+
+    # Build habitat-sim 0.2.5 from source. Flags per the official
+    # BUILD_FROM_SOURCE.md on the v0.2.5 branch:
+    #   --headless  required for cluster + multi-GPU nodes (no display).
+    #   --bullet    enable Bullet physics (vendored as a submodule, hence
+    #               the --recursive clone).
+    # We deliberately omit --with-cuda (PIRLNav does not use direct CUDA
+    # tensor sharing and it adds avoidable build risk).
+    git clone --branch v0.2.5 --recursive --depth 1 \
+        https://github.com/facebookresearch/habitat-sim.git /opt/habitat-sim
+    cd /opt/habitat-sim
+    python -m pip install -r requirements.txt
+    python setup.py install --headless --bullet
+    cd /
+    # Drop the source tree to keep the image lean; the installed package
+    # lives under the conda env.
+    rm -rf /opt/habitat-sim
+
+    python -m pip install \
+        "gym>=0.22.0,<0.23.1" \
+        "numpy>=1.16.1,<2.0" \
+        "yacs>=0.1.8" \
+        "numpy-quaternion>=2019.3.18.14.33.20" \
+        "attrs>=19.1.0" \
+        "opencv-python-headless>=3.3.0" \
+        "imageio>=2.2.0" \
+        "imageio-ffmpeg>=0.2.0" \
+        "scipy>=1.0.0" \
+        "tqdm>=4.0.0" \
+        "numba>=0.44.0" \
+        "moviepy>=1.0.1" \
+        "protobuf==3.20.1" \
+        "tensorboard==2.8.0" \
+        "ifcfg" \
+        "lmdb>=0.98" \
+        "webdataset==0.1.40" \
+        "transformers" \
+        "timm" \
+        "huggingface-hub" \
+        "wandb"
+
+    conda clean -afy
+    # Import-only smoke check. We deliberately do NOT call
+    # torch.cuda.is_available() here: the build host (Delta AI login node)
+    # has no GPU, and that check would falsely fail. GPU verification
+    # happens at runtime under `apptainer exec --nv` on a ghx4 node.
+    python - <<'PY'
+import habitat_sim
+import torch
+
+print("habitat_sim", habitat_sim.__version__)
+print("torch", torch.__version__, "cuda_runtime", torch.version.cuda)
+PY
+
+%runscript
+    exec "$@"
+
+%test
+    set -eux
+    python - <<'PY'
+import habitat_sim
+import torch
+
+print("python import check ok")
+print("habitat_sim", habitat_sim.__version__)
+print("torch", torch.__version__)
+PY
