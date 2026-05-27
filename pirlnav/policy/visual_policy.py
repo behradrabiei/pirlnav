@@ -1,3 +1,5 @@
+from typing import Dict
+
 import torch
 import torch.nn as nn
 from gym import Space
@@ -14,6 +16,10 @@ from pirlnav.policy.policy import ILPolicy
 from pirlnav.policy.semantic_map_encoder import SemanticMapEncoder
 from pirlnav.policy.transforms import get_transform
 from pirlnav.policy.visual_encoder import VisualEncoder
+from pirlnav.task.semantic_map import (
+    HM3D6_TO_OBJECT_CLOUD_TASK,
+    NUM_CATEGORIES,
+)
 from pirlnav.utils.utils import load_encoder
 
 
@@ -143,11 +149,28 @@ class ObjectNavILMAENet(Net):
             rnn_input_size += 32
             logger.info("\n\nSetting up Object Goal sensor")
 
+        # Compass auxiliary loss flag (read once; encoder + oracle path
+        # below both depend on it).  When True, the point-transformer's
+        # cls_head outputs 12-D for supervision against GoalCompassSensor,
+        # the oracle goal_compass is *not* wired into the GRU, and the
+        # encoder is goal-conditioned (see ObjectCloudEncoder).
+        oc_cfg_pre = getattr(policy_config, "OBJECT_CLOUD_ENCODER", None)
+        self._compass_aux_loss = bool(
+            getattr(oc_cfg_pre, "compass_aux_loss", False)
+            if oc_cfg_pre is not None
+            else False
+        )
+
         # Optional 12-bin goal-direction compass (oracle feature from
         # GoalCompassSensor).  Auto-activates iff the sensor is listed in
-        # TASK.SENSORS so the observation-space carries a "goal_compass" key.
+        # TASK.SENSORS so the observation-space carries a "goal_compass" key
+        # *and* compass_aux_loss is off (in aux-loss mode the oracle is a
+        # training label only, never fed into the GRU).
         self._goal_compass_uuid = "goal_compass"
-        if self._goal_compass_uuid in observation_space.spaces:
+        if (
+            self._goal_compass_uuid in observation_space.spaces
+            and not self._compass_aux_loss
+        ):
             gc_input_dim = observation_space.spaces[
                 self._goal_compass_uuid
             ].shape[0]
@@ -219,18 +242,46 @@ class ObjectNavILMAENet(Net):
                 "EGO_OBJECT_CLOUD_SENSOR is enabled."
             )
             oc_embed_dim = int(oc_cfg.embedding_size)
+            # In compass-aux mode the encoder emits a 12-D compass prediction
+            # which is (a) supervised against GoalCompassSensor inside
+            # ILAgent.update and (b) projected to oc_embed_dim by compass_proj
+            # before entering the GRU concat.  The GRU input slot is the
+            # same oc_embed_dim either way, so rnn_input_size is unchanged.
+            inner_out_dim = 12 if self._compass_aux_loss else oc_embed_dim
             self.object_cloud_encoder = ObjectCloudEncoder(
                 num_classes=int(oc_cfg.num_classes),
                 d_model=int(oc_cfg.d_model),
-                out_dim=oc_embed_dim,
+                out_dim=inner_out_dim,
                 num_layers=int(oc_cfg.num_layers),
                 rpe_mode=str(oc_cfg.rpe_mode),
                 ffn_expansion=int(oc_cfg.ffn_expansion),
+                use_goal_conditioning=self._compass_aux_loss,
             )
+            if self._compass_aux_loss:
+                self.compass_proj = nn.Linear(12, oc_embed_dim)
+            if (
+                self._compass_aux_loss
+                and getattr(self, "_n_object_categories", None)
+                == len(HM3D6_TO_OBJECT_CLOUD_TASK)
+                and int(oc_cfg.num_classes) == NUM_CATEGORIES
+            ):
+                self.register_buffer(
+                    "_oc_goal_remap",
+                    torch.tensor(HM3D6_TO_OBJECT_CLOUD_TASK, dtype=torch.long),
+                    persistent=False,
+                )
+            else:
+                self._oc_goal_remap = None
             rnn_input_size += oc_embed_dim
             logger.info(
                 "\n\nSetting up Ego Object Cloud sensor "
-                "(MAX_OBJECTS={} -> {} dim)".format(max_obj, oc_embed_dim)
+                "(MAX_OBJECTS={} -> {} dim{})".format(
+                    max_obj,
+                    oc_embed_dim,
+                    ", compass-aux 12-D head + goal conditioning"
+                    if self._compass_aux_loss
+                    else "",
+                )
             )
 
         if policy_config.SEQ2SEQ.use_prev_action:
@@ -289,6 +340,11 @@ class ObjectNavILMAENet(Net):
         rgb_embedding: [batch_size x RGB_ENCODER.output_size]
         """
         N = rnn_hidden_states.size(1)
+
+        # Per-forward auxiliary tensor stash (read by ILPolicy.get_last_aux()
+        # and consumed by ILAgent.update when compass_aux_coef > 0).  Cleared
+        # at every entry so stale values from prior calls cannot leak.
+        self._last_aux: Dict[str, torch.Tensor] = {}
 
         x = []
 
@@ -380,7 +436,21 @@ class ObjectNavILMAENet(Net):
                 obs_oc = obs_oc.contiguous().view(
                     -1, obs_oc.size(2), obs_oc.size(3)
                 )
-            x.append(self.object_cloud_encoder(obs_oc))
+            if self._compass_aux_loss:
+                # reshape(-1) flattens (N, 1), (T*N, 1), or (T, N, 1) into
+                # a flat (B,) tensor matching obs_oc's leading dim.
+                goal_class = (
+                    observations[ObjectGoalSensor.cls_uuid].long().reshape(-1)
+                )
+                if self._oc_goal_remap is not None:
+                    goal_class = self._oc_goal_remap[goal_class]
+                compass_pred = self.object_cloud_encoder(
+                    obs_oc, goal_class=goal_class
+                )
+                self._last_aux["compass_pred"] = compass_pred
+                x.append(self.compass_proj(compass_pred))
+            else:
+                x.append(self.object_cloud_encoder(obs_oc))
 
         if self.policy_config.SEQ2SEQ.use_prev_action:
             prev_actions_embedding = self.prev_action_embedding(

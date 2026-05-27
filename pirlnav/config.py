@@ -27,6 +27,13 @@ _TASK_CONFIG.SIMULATOR.AGENT_0.SENSORS = ["RGB_SENSOR"]
 
 _TASK_CONFIG.TASK.POSSIBLE_ACTIONS = ["STOP", "MOVE_FORWARD", "TURN_LEFT", "TURN_RIGHT", "LOOK_UP", "LOOK_DOWN"]
 
+# Pose-replay teleport action used only by ILEnvDDPTrainer when
+# IL.BehaviorCloning.REPLAY_MODE == "poses".  The trainer appends
+# "REPLAY_TELEPORT" to TASK.POSSIBLE_ACTIONS at init time; RL trainers
+# never list it so this entry has no effect on RL.
+_TASK_CONFIG.TASK.ACTIONS.REPLAY_TELEPORT = CN()
+_TASK_CONFIG.TASK.ACTIONS.REPLAY_TELEPORT.TYPE = "ReplayTeleportAction"
+
 # Optional sensor that surfaces precomputed frozen-DINOv2 CLS features for the
 # current step of the expert reference_replay.  Only activated by adding
 # "CACHED_DINOV2_SENSOR" to TASK.SENSORS in a task yaml; the policy then skips
@@ -46,6 +53,16 @@ _TASK_CONFIG.TASK.GOAL_COMPASS_SENSOR = CN()
 _TASK_CONFIG.TASK.GOAL_COMPASS_SENSOR.TYPE = "GoalCompassSensor"
 _TASK_CONFIG.TASK.GOAL_COMPASS_SENSOR.NUM_BINS = 12
 _TASK_CONFIG.TASK.GOAL_COMPASS_SENSOR_UUID = "goal_compass"
+
+# Optional sensor exposing the next-step expert agent pose (position +
+# xyzw quaternion) read from ``episode.reference_replay[t].agent_state``.
+# Only activated by the IL trainer when IL.BehaviorCloning.REPLAY_MODE ==
+# "poses"; the trainer then dispatches TELEPORT actions to the env instead
+# of stepping discrete expert actions through sim physics.  RL trainers
+# never list this sensor in TASK.SENSORS.
+_TASK_CONFIG.TASK.NEXT_POSE_SENSOR = CN()
+_TASK_CONFIG.TASK.NEXT_POSE_SENSOR.TYPE = "NextPoseSensor"
+_TASK_CONFIG.TASK.NEXT_POSE_SENSOR_UUID = "next_pose"
 
 # Optional online egocentric semantic + occupancy map sensor.  Only active
 # when "SEMANTIC_MAP_SENSOR" is listed in TASK.SENSORS *and* DEPTH_SENSOR /
@@ -202,6 +219,24 @@ _CONFIG.IL.BehaviorCloning.reward_window_size = 50
 _CONFIG.IL.BehaviorCloning.sync_frac = 0.6
 _CONFIG.IL.BehaviorCloning.use_double_buffered_sampler = False
 _CONFIG.IL.BehaviorCloning.hidden_size = 2048
+# Coefficient for the optional goal-compass auxiliary loss applied to the
+# point-transformer compass head (see POLICY.OBJECT_CLOUD_ENCODER.compass_aux_loss
+# below).  0.0 disables the loss term; non-zero enables it when the policy
+# has been configured to expose a compass_pred via ObjectCloudEncoder.
+_CONFIG.IL.BehaviorCloning.compass_aux_coef = 0.0
+# How rollout collection advances the env during IL training.
+#   "poses"   -> teleport the agent to episode.reference_replay[t].agent_state
+#                via a registered TELEPORT task action (default; bypasses sim
+#                physics so trajectories match the recorded demonstrations
+#                exactly, regardless of ALLOW_SLIDING / collisions).
+#   "actions" -> step the env with the expert discrete action (legacy
+#                behaviour; trajectories may drift from recorded poses when
+#                ALLOW_SLIDING=False).
+# Only consulted by ILEnvDDPTrainer; RL trainers ignore this field.  Pose
+# mode requires the recorded ``agent_state`` to be present on every
+# reference_replay step (already the case for the MP3D demos shipped with
+# this repo).
+_CONFIG.IL.BehaviorCloning.REPLAY_MODE = "poses"
 
 ##############################################
 # Policy config
@@ -228,8 +263,8 @@ _CONFIG.POLICY.RGB_ENCODER.drop_path_rate = 0.0
 _CONFIG.POLICY.RGB_ENCODER.normalize_visual_inputs = False
 # DINOv2 variant (activated by setting backbone = "dinov2_base").
 _CONFIG.POLICY.RGB_ENCODER.dinov2_model_name = "facebook/dinov2-base"
-_CONFIG.POLICY.RGB_ENCODER.dinov2_resize_h = 476
-_CONFIG.POLICY.RGB_ENCODER.dinov2_resize_w = 630
+_CONFIG.POLICY.RGB_ENCODER.dinov2_resize_h = 252
+_CONFIG.POLICY.RGB_ENCODER.dinov2_resize_w = 252
 _CONFIG.POLICY.RGB_ENCODER.dinov2_output_dim = 768
 
 _CONFIG.POLICY.GOAL_COMPASS_ENCODER = CN()
@@ -256,6 +291,16 @@ _CONFIG.POLICY.OBJECT_CLOUD_ENCODER.d_model = 64
 _CONFIG.POLICY.OBJECT_CLOUD_ENCODER.num_layers = 2
 _CONFIG.POLICY.OBJECT_CLOUD_ENCODER.rpe_mode = "log_distance"
 _CONFIG.POLICY.OBJECT_CLOUD_ENCODER.ffn_expansion = 2
+# When True, the point-transformer's cls_head outputs a 12-D vector that is
+# (a) supervised against the privileged GoalCompassSensor via an auxiliary
+# MSE loss inside ILAgent.update and (b) projected through a Linear(12,
+# embedding_size) layer into the GRU input concat.  Also enables goal
+# conditioning of the encoder (CLS query is biased by the goal class
+# embedding; per-object is_goal flag is added to object features).  The
+# oracle goal_compass is *only* used as a training label -- it is never fed
+# into the policy at train or eval time.  Default False preserves the
+# current encoder behaviour bit-identically.
+_CONFIG.POLICY.OBJECT_CLOUD_ENCODER.compass_aux_loss = False
 
 _CONFIG.POLICY.STATE_ENCODER = CN()
 _CONFIG.POLICY.STATE_ENCODER.hidden_size = 2048

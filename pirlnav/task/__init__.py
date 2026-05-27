@@ -1,1 +1,1 @@
-from pirlnav.task import object_nav_task, sensors
+from pirlnav.task import object_nav_task, sensors, teleport_action

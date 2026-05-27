@@ -6,6 +6,12 @@ from collections import defaultdict
 from typing import DefaultDict, Dict, List, Optional, Union
 
 import cv2
+import matplotlib
+# Use a non-interactive backend so eval video rendering works headlessly.
+# Set before importing pyplot; harmless if the host already configured one.
+if matplotlib.get_backend().lower() != "agg":
+    matplotlib.use("Agg", force=True)
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from habitat.utils import profiling_wrapper
@@ -29,6 +35,77 @@ from pirlnav.task.semantic_map import label_map_to_rgb
 # after a downstream HSV colormap lookup. Used to colourise the raw
 # first-person semantic observation for eval videos.
 _INSTANCE_HASH_MULTIPLIER: np.uint32 = np.uint32(2654435761)
+
+
+def render_goal_compass_panel(
+    compass: np.ndarray,
+    side_px: int,
+    title: str,
+    max_val: Optional[float] = None,
+) -> np.ndarray:
+    """Render a 12-bin goal-compass vector as a polar bar chart.
+
+    Mirrors the convention used by `global_test.py.render_compass_panel` and
+    by `GoalCompassSensor`: bin 0 points up (agent forward), positive angles
+    advance counter-clockwise, bar heights are the raw (non-negative) bin
+    scores.  Pass `max_val` to pin the radial scale -- the eval video uses
+    this to keep the GT and predicted panels on the same scale so bar heights
+    are directly comparable across the two columns.
+
+    Args:
+        compass: (12,) non-negative float vector.
+        side_px: output panel side length in pixels (square).
+        title: text shown above the polar plot.
+        max_val: radial axis cap.  None -> auto-scale to `compass.max()`.
+
+    Returns:
+        (side_px, side_px, 3) uint8 RGB image.
+    """
+    compass = np.asarray(compass, dtype=np.float32).reshape(-1)
+    n_bins = compass.shape[0]
+    bin_angles = np.arange(n_bins) * (2.0 * np.pi / n_bins)
+
+    if max_val is None or not np.isfinite(max_val) or max_val <= 1e-9:
+        max_val = float(compass.max()) if compass.size and compass.max() > 1e-9 else 1.0
+    max_val = float(max_val)
+
+    # `colors` is normalised against `max_val` so identical bar heights across
+    # GT and pred panels also receive identical hues.
+    colors = plt.cm.viridis(np.clip(compass / max_val, 0.0, 1.0))
+
+    fig = plt.figure(figsize=(side_px / 100.0, side_px / 100.0), dpi=100)
+    try:
+        ax = fig.add_subplot(111, projection="polar")
+        ax.bar(
+            bin_angles,
+            compass,
+            width=(2.0 * np.pi / n_bins),
+            bottom=0.0,
+            color=colors,
+            edgecolor="white",
+            linewidth=0.5,
+            align="center",
+        )
+        ax.plot([0.0, 0.0], [0.0, max_val * 1.05], color="red", linewidth=2.0)
+        ax.set_theta_zero_location("N")
+        ax.set_theta_direction(1)
+        ax.set_ylim(0.0, max_val * 1.15)
+        ax.set_yticklabels([])
+        ax.set_xticks(bin_angles)
+        ax.set_xticklabels(
+            [f"{int(np.rad2deg(a))}" for a in bin_angles], fontsize=7
+        )
+        ax.set_title(title, fontsize=10, pad=10)
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.canvas.draw()
+        buf = np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()
+    finally:
+        plt.close(fig)
+
+    if buf.shape[0] != side_px or buf.shape[1] != side_px:
+        buf = cv2.resize(buf, (side_px, side_px), interpolation=cv2.INTER_AREA)
+    return buf
 
 
 def load_encoder(encoder, path):
@@ -118,6 +195,51 @@ def observations_to_image(observation: Dict, info: Dict) -> np.ndarray:
                 packed.astype(np.float32, copy=False), side_px=target_h
             )
             render_obs_images.append(cloud_rgb)
+        elif sensor_name == "goal_compass":
+            # Privileged 12-bin direction-to-goal feature from
+            # GoalCompassSensor.  Rendered as the GT column for the
+            # compass-aux variants; harmless if the policy doesn't consume
+            # it (it is only a training label).
+            gt = observation[sensor_name]
+            if not isinstance(gt, np.ndarray):
+                gt = gt.cpu().numpy()
+            target_h = (
+                render_obs_images[0].shape[0] if render_obs_images else 480
+            )
+            render_obs_images.append(
+                render_goal_compass_panel(
+                    gt.astype(np.float32, copy=False),
+                    side_px=target_h,
+                    title="Goal compass (GT)",
+                )
+            )
+        elif sensor_name == "compass_pred":
+            # Not a real sensor: injected into the per-env observation dict by
+            # the IL eval loop from ILPolicy.get_last_aux()["compass_pred"].
+            # Pin the radial scale to the GT max (if available) so bar heights
+            # are directly comparable across the GT and predicted panels.
+            pred = observation[sensor_name]
+            if not isinstance(pred, np.ndarray):
+                pred = pred.cpu().numpy()
+            target_h = (
+                render_obs_images[0].shape[0] if render_obs_images else 480
+            )
+            gt_max: Optional[float] = None
+            if "goal_compass" in observation:
+                gt = observation["goal_compass"]
+                if not isinstance(gt, np.ndarray):
+                    gt = gt.cpu().numpy()
+                gt_arr = np.asarray(gt, dtype=np.float32).reshape(-1)
+                if gt_arr.size:
+                    gt_max = float(gt_arr.max())
+            render_obs_images.append(
+                render_goal_compass_panel(
+                    pred.astype(np.float32, copy=False),
+                    side_px=target_h,
+                    title="Goal compass (pred)",
+                    max_val=gt_max,
+                )
+            )
 
     # add image goal if observation has image_goal info
     if "imagegoal" in observation or "imagegoalrotation" in observation:

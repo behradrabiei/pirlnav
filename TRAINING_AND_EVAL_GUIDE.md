@@ -12,8 +12,14 @@ working directory is the repo root (`/root/Projects/World-Modelling/pirlnav`).
 |---|---|
 | MP3D 1-scene 6-category dataset | `data/datasets/objectnav/objectnav_mp3d/objectnav_mp3d_1scene_6cat/` |
 | OVRL ResNet-50 pretrained encoder | `data/visual_encoders/omnidata_DINO_02.pth` |
-| DINOv2 precomputed feature cache | `data/dinov2_cache/17DRP5sb8fy/<episode_id>.pt` |
+| DINOv2 feature cache (action-replay, legacy 252×252) | `data/dinov2_cache/17DRP5sb8fy/<episode_id>.pt` |
+| DINOv2 feature cache (pose-replay, 252×252) | `data/dinov2_cache_poses_252_poses/17DRP5sb8fy/<episode_id>.pt` |
 | Scene mesh / navmesh | `data/scene_datasets/mp3d/17DRP5sb8fy/` |
+
+Cached `.pt` files are dicts with key `"dino_cls"`, shape `(T+1, 768)` — one CLS
+token per recorded replay step.  The cache directory is selected by the IL
+trainer at runtime via `TASK_CONFIG.TASK.CACHED_DINOV2_SENSOR.CACHE_ROOT` (each
+shell launcher exports this as `CACHE_ROOT`).
 
 The dataset has two splits:
 
@@ -23,6 +29,42 @@ The dataset has two splits:
 ---
 
 ## 2. Training
+
+### Teacher forcing mode: pose-replay vs action-replay
+
+IL rollout collection advances the env one of two ways, controlled by
+`IL.BehaviorCloning.REPLAY_MODE`:
+
+| Mode | Default? | How the env advances per step | Side effects |
+|---|---|---|---|
+| `poses` | **yes** | `ReplayTeleportAction` teleports the agent to `episode.reference_replay[t].agent_state` (position + xyzw quaternion). Bypasses sim physics. | Trajectories match the recorded demos exactly regardless of `ALLOW_SLIDING` or navmesh edge cases. |
+| `actions` | opt-in | Steps the discrete expert action through sim physics (legacy behaviour). | Trajectories may drift from the recorded poses when `ALLOW_SLIDING=False` (collisions silently no-op the move). |
+
+The IL trainer (`pirlnav-il`) reads this flag in `_init_train`; the RL trainer
+(`pirlnav-ddppo`) ignores it.  Every shell launcher under `scripts/run_il_*.sh`
+exposes it as the `REPLAY_MODE` env var:
+
+```bash
+# default (poses)
+bash scripts/run_il_mp3d_1scene_dinov2_cached_252.sh --full
+
+# fall back to legacy action-replay
+REPLAY_MODE=actions bash scripts/run_il_mp3d_1scene_dinov2_cached_252.sh --full
+```
+
+Implementation notes:
+
+* In `poses` mode the trainer appends `NEXT_POSE_SENSOR` to
+  `TASK_CONFIG.TASK.SENSORS` and `REPLAY_TELEPORT` to
+  `TASK_CONFIG.TASK.POSSIBLE_ACTIONS`.  Both are filtered out of the
+  policy_action_space before the policy is constructed, so the policy's
+  `prev_action_embedding` (7×32) and `CategoricalNet` (output dim 6) keep their
+  discrete-nav shapes.  Checkpoints saved in pose mode are
+  load-compatible with action-mode and with RL fine-tuning.
+* Pose mode requires the recorded `agent_state` to be present on every
+  `reference_replay` step (already the case for the MP3D demos in this repo).
+* At eval time the policy outputs only discrete nav actions; pose mode never
+  affects rollouts during `--run-type eval` or RL fine-tuning.
 
 ### 2a. OVRL ResNet-50 variant
 
@@ -77,20 +119,24 @@ Output lands at `data/new_checkpoints/objectnav_il/overfit_v1_noaug/`.
 
 ---
 
-### 2c. DINOv2-cached variant
+### 2c. DINOv2-cached variant (legacy, action-replay)
 
 **Step 1 — Precompute features** (one-time, ~5 min):
 
 ```bash
 python scripts/precompute_dinov2_features.py \
-  --config configs/experiments/il_objectnav_mp3d_dinov2_cached.yaml \
-  --split train \
-  --out-dir data/dinov2_cache
+  --cache-root data/dinov2_cache \
+  --resize-h 252 --resize-w 252 \
+  --replay-mode actions \
+  --split train
 ```
 
 This runs the frozen `facebook/dinov2-base` ViT over every training episode's
-RGB frames (center-crop 476×630, ImageNet normalisation) and saves one
-`<episode_id>.pt` tensor file per episode.
+RGB frames (resize shorter edge to 252 → center-crop to 252×252; patch-aligned
+to 14) plus ImageNet normalisation, and saves one
+`<episode_id>.pt` tensor file (dict with `"dino_cls"` shape `(T+1, 768)`) per
+episode.  `--replay-mode actions` uses action-replay sim playback to obtain RGB
+frames; the resulting cache lands at the unsuffixed `--cache-root`.
 
 **Step 2 — Train:**
 
@@ -115,6 +161,11 @@ are **frozen** and **not** saved into checkpoints.
 Output lands at
 `data/new_checkpoints_dinov2_cached/objectnav_il/mp3d_1scene_6cat_dinov2_cached/`.
 
+> **Note:** This launcher's `CACHE_ROOT` defaults to `data/dinov2_cache`, the
+> action-replay cache.  For pose-replay (the new default training mode), use
+> the 252-pose variant below (§2f) which points at
+> `data/dinov2_cache_poses_252_poses/`.
+
 ---
 
 ### 2d. DINOv2-cached + goal-compass variant
@@ -136,9 +187,10 @@ cached-DINOv2 checkpoint remains load-compatible with the original config.
 
 ```bash
 python scripts/precompute_dinov2_features.py \
-  --config configs/experiments/il_objectnav_mp3d_dinov2_cached.yaml \
-  --split train \
-  --out-dir data/dinov2_cache
+  --cache-root data/dinov2_cache \
+  --resize-h 252 --resize-w 252 \
+  --replay-mode actions \
+  --split train
 ```
 
 **Step 2 — Train:**
@@ -189,9 +241,10 @@ auto-detects it via the observation space and builds the branch.
 
 ```bash
 python scripts/precompute_dinov2_features.py \
-  --config configs/experiments/il_objectnav_mp3d_dinov2_cached.yaml \
-  --split train \
-  --out-dir data/dinov2_cache
+  --cache-root data/dinov2_cache \
+  --resize-h 252 --resize-w 252 \
+  --replay-mode actions \
+  --split train
 ```
 
 **Step 2 — Train:**
@@ -217,7 +270,55 @@ Output lands at
 
 ---
 
-### 2f. Monitoring training with TensorBoard
+### 2f. DINOv2-cached @ 252 (dino-only, pose-replay) — current default workflow
+
+This is the canonical "dino-only" variant: the policy reads cached 252×252
+DINOv2 CLS features for its visual stream, plus the standard `OBJECTGOAL` /
+`COMPASS` / `GPS` sensors.  No goal-compass, no semantic map, no object
+cloud.  Trained with `IL.BehaviorCloning.REPLAY_MODE=poses` (the new
+default), so the env is teleported to each recorded `agent_state` during
+rollout collection.
+
+**Step 1 — Precompute pose-replay 252 features** (one-time, ~5 min):
+
+```bash
+python scripts/precompute_dinov2_features.py \
+  --cache-root data/dinov2_cache_poses_252 \
+  --resize-h 252 --resize-w 252 \
+  --replay-mode poses \
+  --split train
+```
+
+The script appends `_poses` to `--cache-root`, so the actual on-disk root is
+`data/dinov2_cache_poses_252_poses/<scene>/<episode_id>.pt`.
+
+**Step 2 — Train:**
+
+**Launcher:** `scripts/run_il_mp3d_1scene_dinov2_cached_252.sh`
+
+```bash
+bash scripts/run_il_mp3d_1scene_dinov2_cached_252.sh --full
+```
+
+Overrides:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CACHE_ROOT` | `data/dinov2_cache_poses_252_poses` | Root of pose-replay 252 cache |
+| `REPLAY_MODE` | `poses` | `poses` (teleport) or `actions` (sim physics) |
+| `NUM_UPDATES` | 200 / 20000 | Smoke vs `--full` total updates |
+| `NUM_ENVIRONMENTS` | 2 / 4 | Smoke vs `--full` parallel envs |
+| `NUM_CHECKPOINTS` | 10 | Number of evenly-spaced checkpoints saved |
+
+**Experiment config:** `configs/experiments/il_objectnav_mp3d_dinov2_cached.yaml`
+(same yaml as §2c; the launcher just points `CACHE_ROOT` at the pose-replay
+252-cache and lets the trainer's `REPLAY_MODE=poses` default activate the
+teleport path).
+
+Output lands at
+`data/new_checkpoints_dinov2_cached_252/objectnav_il/mp3d_1scene_6cat_dinov2_cached_252/`.
+
+### 2g. Monitoring training with TensorBoard
 
 All three run variants write to `tb/objectnav_il/<TAG>/`.  Point TensorBoard at
 the parent to overlay all runs on the same plots:
@@ -258,7 +359,10 @@ Any variable exported before the command takes priority over the env-file defaul
 | Env file | Model |
 |---|---|
 | `configs/eval_overfit.env` | OVRL ResNet-50 (any checkpoint) |
-| `configs/eval_dinov2_cached.env` | DINOv2-cached (runs online DINOv2 at eval time) |
+| `configs/eval_dinov2_cached.env` | DINOv2-cached, legacy action-replay (runs online DINOv2 at eval time) |
+| `configs/eval_dinov2_cached_252.env` | DINOv2-cached @ 252, dino-only, pose-replay (§2f); runs online DINOv2 at 252×252 at eval time |
+| `configs/eval_dinov2_cached_goalcompass.env` | DINOv2-cached + goal-compass (§2d) |
+| `configs/eval_dinov2_cached_object_cloud.env` | DINOv2-cached + egocentric object-cloud (§2e) |
 
 #### Variables common to both env files
 
@@ -364,12 +468,30 @@ EXTRA_OPTS="POLICY.RGB_ENCODER.use_augmentations_test_time True" \
   bash scripts/eval_il_mp3d_1scene_full.sh configs/eval_dinov2_cached.env
 ```
 
+**DINOv2-cached @ 252 ckpt.10 (dino-only, pose-replay trained) — default eval:**
+
+The env file defaults to `SUCCESS_DISTANCE=1.0`, `ALLOW_SLIDING=True` (matching
+how the demonstrations were recorded), so the command is just:
+
+```bash
+bash scripts/eval_il_mp3d_1scene_full.sh configs/eval_dinov2_cached_252.env
+```
+
+To eval an intermediate checkpoint or override the sliding policy:
+
+```bash
+EVAL_CKPT=data/new_checkpoints_dinov2_cached_252/objectnav_il/mp3d_1scene_6cat_dinov2_cached_252/ckpt.5.pth \
+  ALLOW_SLIDING=False \
+  bash scripts/eval_il_mp3d_1scene_full.sh configs/eval_dinov2_cached_252.env
+```
+
 > **Note on DINOv2 eval:** The cached training pipeline does not save DINOv2
 > backbone weights into the checkpoint (they are frozen).  At eval time the
 > `eval_dinov2_cached.env` uses the **online** DINOv2 config
 > (`configs/experiments/il_objectnav_mp3d_dinov2.yaml`), which re-loads the
 > frozen backbone from HuggingFace and runs it live on each step.  The
-> preprocessing is identical to what built the cache (center-crop 476×630,
+> preprocessing is identical to what built the cache (resize +
+> center-crop at the configured `dinov2_resize_h/w`, default 252×252;
 > ImageNet normalisation), so this is a faithful replica of the training
 > distribution.
 
@@ -480,10 +602,42 @@ seeded RNGs (`il_trainer.py` seeds `random`, `numpy`, and `torch` from
 ### SUCCESS_DISTANCE and ALLOW_SLIDING
 
 The MP3D demonstrations were recorded with `SUCCESS_DISTANCE=1.0 m` and
-`ALLOW_SLIDING=True`.  The upstream PIRLNav YAML defaults to `SUCCESS_DISTANCE=0.1`
-and `ALLOW_SLIDING=False`, which causes the expert replay itself to fail ~75%
-of the time.  **Always override these to `1.0` / `False` (sliding off in eval)
-for meaningful numbers.**
+`ALLOW_SLIDING=True`.  The upstream PIRLNav YAML defaults to
+`SUCCESS_DISTANCE=0.1` and `ALLOW_SLIDING=False`, which causes the expert
+replay itself to fail ~75% of the time.
+
+> **Train vs eval sliding asymmetry.**
+> The task yamls under `configs/tasks/objectnav_mp3d*.yaml` all hardcode
+> `HABITAT_SIM_V0.ALLOW_SLIDING: False`, so training runs with sliding **off**.
+> The eval env files under `configs/eval_*.env` all default to `ALLOW_SLIDING=True`,
+> so eval runs with sliding **on**.  This is intentional but easy to miss:
+>
+> - In **pose-replay training** (`REPLAY_MODE=poses`, the default) the env is
+>   advanced by teleporting to the recorded `agent_state` each step, which
+>   bypasses sim physics entirely.  Sliding doesn't matter at training time --
+>   the trajectory matches the demo exactly regardless.
+> - In **action-replay training** (`REPLAY_MODE=actions`) the env is advanced
+>   by stepping discrete expert actions.  With sliding off, the agent may
+>   silently fail a `MOVE_FORWARD` against a wall and drift from the recorded
+>   trajectory.  Pose-replay was added partly to remove this footgun.
+> - At **eval** the policy outputs discrete actions and they always go through
+>   sim physics.  `ALLOW_SLIDING=True` matches how the demonstrations were
+>   recorded, so success/SPL numbers are comparable to what the expert
+>   achieved.  Setting `ALLOW_SLIDING=False` at eval measures robustness when
+>   collisions hard-stop the agent -- a strictly harder task.
+>
+> Older results in §5 below were taken with `ALLOW_SLIDING=False` at eval to
+> stress-test policy robustness; the new env files default to `True` to match
+> the demonstration recording.  The two settings are not directly comparable;
+> pick one and stick with it across runs you want to compare.
+
+### REPLAY_MODE during training
+
+See §2 "Teacher forcing mode" for the full mechanics.  The TL;DR is that
+pose-replay (the default) bypasses sim physics during rollout collection by
+teleporting to the recorded `agent_state`, so the on-navmesh trajectory
+matches the demos exactly.  Eval is unaffected by `REPLAY_MODE` -- the policy
+always emits discrete nav actions that go through sim physics.
 
 ### NUM_ENVIRONMENTS=1 during eval
 

@@ -9,6 +9,9 @@ from torchvision.transforms import ColorJitter, RandomApply
 
 SizeT = Union[int, Tuple[int, int]]
 
+# DINOv2 ViT patch size (facebook/dinov2-*).
+DINOV2_PATCH_SIZE = 14
+
 
 def _as_hw(size: SizeT) -> Tuple[int, int]:
     if isinstance(size, int):
@@ -17,11 +20,45 @@ def _as_hw(size: SizeT) -> Tuple[int, int]:
     return int(h), int(w)
 
 
+def patch_aligned_edge(
+    target_edge: int,
+    patch_size: int = DINOV2_PATCH_SIZE,
+) -> int:
+    """Largest multiple of ``patch_size`` not exceeding ``target_edge``."""
+    if target_edge < patch_size:
+        return patch_size
+    return (target_edge // patch_size) * patch_size
+
+
+def default_dinov2_size_hw(
+    resnet_image_size: int = 256,
+    patch_size: int = DINOV2_PATCH_SIZE,
+) -> Tuple[int, int]:
+    """Square DINOv2 input size mirroring the ResNet ``image_size`` pipeline."""
+    edge = patch_aligned_edge(resnet_image_size, patch_size)
+    return edge, edge
+
+
+def resize_and_center_crop(
+    x: torch.Tensor, size_hw: Tuple[int, int]
+) -> torch.Tensor:
+    """Resize shorter edge to ``min(H, W)``, then center-crop to ``(H, W)``.
+
+    Matches ``ResizeTransform`` / ``ShiftAndJitterTransform`` used by the
+    original ResNet visual encoder (``image_size=256``), but allows a
+    rectangular crop when ``size_hw`` is not square.
+    """
+    h, w = _as_hw(size_hw)
+    x = TF.resize(x, min(h, w))
+    x = TF.center_crop(x, output_size=[h, w])
+    return x
+
+
 class RandomShiftsAug(nn.Module):
     """Random pixel-level shift augmentation.
 
-    Originally required square inputs; generalized to rectangular so it can be
-    used with DINOv2's 476x630 pre-processing.
+    Originally required square inputs; generalized to rectangular so it can
+    be used with any patch-aligned DINOv2 input size.
     """
 
     def __init__(self, pad):
@@ -103,8 +140,7 @@ class ResizeTransform(Transform):
 
     def apply(self, x):
         x = x.permute(0, 3, 1, 2)
-        x = TF.resize(x, self.size)
-        x = TF.center_crop(x, output_size=self.size)
+        x = resize_and_center_crop(x, self.size)
         x = x.float() / 255.0
         return x
 
@@ -116,8 +152,7 @@ class ShiftAndJitterTransform(Transform):
 
     def apply(self, x):
         x = x.permute(0, 3, 1, 2)
-        x = TF.resize(x, self.size)
-        x = TF.center_crop(x, output_size=self.size)
+        x = resize_and_center_crop(x, self.size)
         x = x.float() / 255.0
         if "jitter" in self.augmentations_name:
             x = RandomApply([ColorJitter(0.4, 0.4, 0.4, 0.4)], p=1.0)(x)
@@ -129,22 +164,28 @@ class ShiftAndJitterTransform(Transform):
 class DINOv2Transform(Transform):
     """Preprocessing for the frozen DINOv2 visual encoder.
 
-    Center-crops RGB to a rectangular ``(H, W)`` (default 476x630 = nearest
-    multiple of patch_size=14 below the habitat 480x640 sensor), divides by
-    255, then optionally applies jitter and/or shift augmentations. This
-    matches ``compute_dino_cls`` in the reference
-    ``collect_demonstrations.py`` pipeline. ImageNet normalization is
-    applied inside the encoder itself so this stays symmetric with the
-    other transforms (they all emit tensors in ``[0, 1]``).
+    Uses the same resize-then-center-crop pipeline as the ResNet visual
+    encoder (``ResizeTransform``): resize the shorter edge to ``min(H, W)``,
+    then center-crop to ``(H, W)``. Default ``(252, 252)`` is the largest
+    multiple of DINOv2's patch size (14) not exceeding the ResNet
+    ``image_size`` of 256. Override via ``dinov2_resize_h/w`` in config
+    (e.g. 476x630 for a higher-res rectangular crop). ImageNet normalization
+    is applied inside the encoder; this transform outputs ``[0, 1]`` floats.
     """
 
     def __init__(self, augmentations_name: str, size_hw: Tuple[int, int]):
         self.augmentations_name = augmentations_name
         self.size_hw = _as_hw(size_hw)
+        h, w = self.size_hw
+        if h % DINOV2_PATCH_SIZE != 0 or w % DINOV2_PATCH_SIZE != 0:
+            raise ValueError(
+                f"DINOv2 input size {self.size_hw} must be a multiple of "
+                f"patch size {DINOV2_PATCH_SIZE}."
+            )
 
     def apply(self, x):
         x = x.permute(0, 3, 1, 2)
-        x = TF.center_crop(x, output_size=list(self.size_hw))
+        x = resize_and_center_crop(x, self.size_hw)
         x = x.float() / 255.0
         if "jitter" in self.augmentations_name:
             x = RandomApply([ColorJitter(0.4, 0.4, 0.4, 0.4)], p=1.0)(x)
