@@ -1,0 +1,72 @@
+BASE_TASK_CONFIG_PATH: "configs/tasks/objectnav_mp3d_object_cloud.yaml"
+CMD_TRAILING_OPTS: ["TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS", "50000"]
+ENV_NAME: "SimpleRLEnv"
+SIMULATOR_GPU_ID: 0
+TORCH_GPU_ID: 0
+VIDEO_OPTION: []
+TENSORBOARD_DIR: "tb_dinov2_rl_252_online_object_cloud"
+VIDEO_DIR: "video_dir"
+TEST_EPISODE_COUNT: -1
+EVAL_CKPT_PATH_DIR: "data/new_checkpoints_dinov2_rl_252_online_object_cloud"
+NUM_ENVIRONMENTS: 4
+CHECKPOINT_FOLDER: "data/new_checkpoints_dinov2_rl_252_online_object_cloud"
+TRAINER_NAME: "pirlnav-ppo"
+SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR", "SEMANTIC_SENSOR"]
+NUM_UPDATES: 20000
+LOG_INTERVAL: 10
+NUM_CHECKPOINTS: 10
+FORCE_TORCH_SINGLE_THREADED: True
+
+EVAL:
+  SPLIT: "val"
+
+RL:
+  SUCCESS_REWARD: 2.5
+  SLACK_REWARD: -1e-3
+
+  POLICY:
+    name: "ObjectNavILMAEPolicy"
+
+  PPO:
+    clip_param: 0.2
+    ppo_epoch: 4
+    value_loss_coef: 0.5
+    entropy_coef: 0.01
+    lr: 2.5e-4
+    eps: 1e-5
+    max_grad_norm: 0.2
+    num_steps: 64
+    use_gae: True
+    gamma: 0.99
+    tau: 0.95
+    use_linear_clip_decay: False
+    reward_window_size: 50
+    use_normalized_advantage: False
+    hidden_size: 512
+
+  DDPPO:
+    sync_frac: 0.6
+    distrib_backend: NCCL
+    pretrained_weights: data/new_checkpoints_dinov2_cached_252_online_object_cloud/objectnav_il/mp3d_1scene_6cat_dinov2_cached_252_online_object_cloud/ckpt.10.pth
+    pretrained: True
+    pretrained_encoder: False
+    # Keep True for DINOv2: False enables the ResNet static-encoder cache path
+    # which DINOv2VisualEncoder does not support.  The backbone stays frozen
+    # regardless (requires_grad=False inside DINOv2VisualEncoder).
+    train_encoder: True
+    reset_critic: True
+
+POLICY:
+  CRITIC:
+    no_critic: False
+  RGB_ENCODER:
+    backbone: "dinov2_base"
+    pretrained_encoder: null
+    dinov2_model_name: "facebook/dinov2-base"
+    dinov2_resize_h: 252
+    dinov2_resize_w: 252
+    dinov2_output_dim: 768
+    use_augmentations: True
+    use_augmentations_test_time: False
+  OBJECT_CLOUD_ENCODER:
+    embedding_size: 32
