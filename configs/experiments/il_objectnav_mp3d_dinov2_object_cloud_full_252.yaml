@@ -1,0 +1,97 @@
+# Full-MP3D online-DINOv2 (@ 252x252) + online-object-cloud IL experiment.
+#
+# Combines the dino-only @ 252x252 recipe (il_objectnav_mp3d_dinov2_full.yaml,
+# run 1-node x 4-GPU at NUM_ENVIRONMENTS=40 for ~500M env steps) with the
+# online ego object-cloud branch. Differences vs
+# configs/experiments/il_objectnav_mp3d_dinov2_object_cloud_full.yaml:
+#   - DINOv2 input lowered 476x630 -> 252x252 to match the dino-only variant
+#     (much cheaper backbone forward, so 40 envs/rank fit on one ghx4 node).
+#   - Distinct TENSORBOARD_DIR / CHECKPOINT_FOLDER / EVAL_CKPT_PATH_DIR so the
+#     476x630 8-rank run and this 252 4-GPU run never clobber each other.
+#   - OBJECT_CLOUD_ENCODER kept at the *original* size (d_model 64,
+#     num_layers 2, embedding_size 32, ffn_expansion 2 -- the pirlnav/config.py
+#     defaults). The enlarged variant (d_model 128, 4 layers) OOMs in the BC
+#     update at 40 envs: vector attention materializes (B, N, N, d_model)
+#     relation tensors, and at B = 64*40/2 = 1280 frames per minibatch each
+#     one is ~6.5 GB with ~10 kept per layer for backward (probe
+#     oc252_4gpu_n40, 2026-06-09).
+#   - DEPTH/SEMANTIC sensors lowered 640x480 -> 320x240 (RGB stays 640x480 for
+#     DINOv2). The 4-GPU probe was env-time bound (~20s/update vs ~1.7s for
+#     dino-only) on the 3-pass render + readback contention of 40 workers per
+#     GPU; these sensors only feed the object cloud, and a one-off resolution
+#     comparison measured zero object loss and 0.5-2.3cm mean centroid drift
+#     at 320x240 across 3 scenes (2026-06-09).
+#     MIN_MASK_PIXELS scales 100 -> 25 to keep the same fraction-of-frame
+#     visibility threshold. Side effect: depth+semantic rollout storage drops
+#     ~6 GB -> ~1.5 GB per rank.
+# Shared with that sibling: 21-cat full-MP3D base task config, RGB+DEPTH+
+# SEMANTIC sensors (online cloud needs live depth+semantic),
+# MAX_SCENE_REPEAT_STEPS=5000.
+#
+# MAX_OBJECTS defaults to 300 in the base task config; the launchers override
+# it to 100 for this variant. Online RGB augmentation (jitter+shift) and pose
+# replay (IL.BehaviorCloning.REPLAY_MODE=poses) are codebase defaults; made
+# explicit below / in the launchers.
+BASE_TASK_CONFIG_PATH: "configs/tasks/objectnav_mp3d_object_cloud_full.yaml"
+CMD_TRAILING_OPTS: [
+  "TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS", "5000",
+  "TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.WIDTH", "320",
+  "TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.HEIGHT", "240",
+  "TASK_CONFIG.SIMULATOR.SEMANTIC_SENSOR.WIDTH", "320",
+  "TASK_CONFIG.SIMULATOR.SEMANTIC_SENSOR.HEIGHT", "240",
+  "TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR.MIN_MASK_PIXELS", "25",
+]
+ENV_NAME: "SimpleRLEnv"
+SIMULATOR_GPU_ID: 0
+TORCH_GPU_ID: 0
+VIDEO_OPTION: []
+TENSORBOARD_DIR: "tb_dinov2_object_cloud_full_252"
+VIDEO_DIR: "video_dir"
+TEST_EPISODE_COUNT: -1
+EVAL_CKPT_PATH_DIR: "data/new_checkpoints_dinov2_object_cloud_full_252"
+NUM_ENVIRONMENTS: 8
+CHECKPOINT_FOLDER: "data/new_checkpoints_dinov2_object_cloud_full_252"
+TRAINER_NAME: "pirlnav-il"
+SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR", "SEMANTIC_SENSOR"]
+NUM_UPDATES: 54000
+LOG_INTERVAL: 10
+NUM_CHECKPOINTS: 60
+FORCE_TORCH_SINGLE_THREADED: True
+
+EVAL:
+  SPLIT: "train"
+
+IL:
+  POLICY:
+    name: "ObjectNavILMAEPolicy"
+  BehaviorCloning:
+    # 4 (not the default 2): even the original-size cloud encoder OOMs at
+    # nmb=2 with 40 envs/rank -- its vector attention keeps a chain of
+    # (B, 100, 100, 64) relation tensors for backward, ~30 GB extra at
+    # B=1280 vs B=640 (probe oc252_4gpu_n40, 2026-06-09).
+    num_mini_batch: 4
+
+RL:
+  SUCCESS_REWARD: 2.5
+  SLACK_REWARD: -1e-3
+
+POLICY:
+  CRITIC:
+    no_critic: True
+  RGB_ENCODER:
+    backbone: "dinov2_base"
+    pretrained_encoder: null
+    dinov2_model_name: "facebook/dinov2-base"
+    dinov2_resize_h: 252
+    dinov2_resize_w: 252
+    dinov2_output_dim: 768
+    use_augmentations: True
+    use_augmentations_test_time: True
+    augmentations_name: "jitter+shift"
+  OBJECT_CLOUD_ENCODER:
+    embedding_size: 32
+    num_classes: 21
+    d_model: 64
+    num_layers: 2
+    rpe_mode: "log_distance"
+    ffn_expansion: 2

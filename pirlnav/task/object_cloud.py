@@ -20,7 +20,11 @@ import cv2
 import numpy as np
 import quaternion  # noqa: F401  (registers np.quaternion dtype)
 
-from pirlnav.task.semantic_map import OBJECTNAV_CATEGORIES, PALETTE
+from pirlnav.task.semantic_map import (
+    MPCAT40_TO_TASK,
+    OBJECTNAV_CATEGORIES,
+    PALETTE,
+)
 
 
 TASK_NAMES: List[str] = [name for name, _ in OBJECTNAV_CATEGORIES]
@@ -202,6 +206,166 @@ class ObjectCloud:
             "n_objects": n,
             "agent_pos": agent_pos_ego,
         }
+
+
+def build_oracle_object_cloud(sim) -> Dict[str, np.ndarray]:
+    """Ground-truth goal-class cloud from ``sim.semantic_annotations()``.
+
+    Same instance filter as ``dump_scene_object_clouds.extract_scene_cloud``
+    (mpcat40 -> task id in [0, 20]) but additionally keeps the semantic
+    instance id and the AABB bounding radius, which the progressive-reveal
+    visibility tests need. No rendering involved. Arrays are empty (N=0) for
+    scenes without goal-class annotations.
+
+    NOTE: positions are the annotation AABB centers, which usually match the
+    semantic mesh but are not guaranteed to. For training, prefer the
+    mesh-derived vertex centroids from ``scripts/dump_ply_object_clouds.py``
+    (loaded by ``EgoObjectCloudSensor`` when ``CACHE_ROOT`` is set); this
+    builder is the cache-less fallback for ad-hoc probing.
+    """
+    centers: List[np.ndarray] = []
+    task_ids: List[int] = []
+    radii: List[float] = []
+    instance_ids: List[int] = []
+    for obj in sim.semantic_annotations().objects:
+        if obj is None or obj.category is None:
+            continue
+        try:
+            inst_id = int(obj.id.split("_")[-1])
+            mp = int(obj.category.index("mpcat40"))
+        except (ValueError, AttributeError):
+            continue
+        task = int(MPCAT40_TO_TASK[mp]) if 0 <= mp < len(MPCAT40_TO_TASK) else -1
+        if task < 0:
+            continue
+        centers.append(np.asarray(obj.aabb.center, dtype=np.float32))
+        task_ids.append(task)
+        radii.append(0.5 * float(np.linalg.norm(obj.aabb.sizes)))
+        instance_ids.append(inst_id)
+    n = len(centers)
+    return {
+        "obj_pos": (
+            np.stack(centers) if n else np.zeros((0, 3), dtype=np.float32)
+        ),
+        "task_ids": np.array(task_ids, dtype=np.int64),
+        "radii": np.array(radii, dtype=np.float32),
+        "instance_ids": np.array(instance_ids, dtype=np.int64),
+    }
+
+
+class OracleRevealCloud:
+    """Progressive reveal over a ground-truth scene cloud -- no rendering.
+
+    Holds the full oracle cloud (from :func:`build_oracle_object_cloud`) plus
+    a persistent per-episode ``revealed`` mask. Each ``update`` reveals the
+    still-hidden objects the camera plausibly sees right now:
+
+      1. range gate -- camera-plane depth within ``[min_dist, max_dist]``
+         (mirrors the old DEPTH_SENSOR window),
+      2. frustum gate -- inside the camera's HFOV/VFOV cone (camera frame is
+         OpenGL-style: +X right, +Y up, -Z forward),
+      3. size gate -- projected angular radius >= ``min_angular_size``
+         (the analog of the online cloud's MIN_MASK_PIXELS threshold),
+      4. occlusion gate -- at least one of 5 rays (AABB center and four
+         half-radius offsets along the camera's right/up axes) is not
+         blocked. ``cast_ray_fn(origin, direction, max_dist)`` returns the
+         first-hit distance or ``None``; MP3D is one merged stage mesh, so
+         each ray's test is "first hit no earlier than
+         ``dist - min(radius, occlusion_margin)``" (the ray legitimately
+         hits the object's own front surface).
+
+    Gates 1-2 are slackened by the object's radius so partially-visible
+    objects (poking into the frame edge or the depth window) remain
+    candidates, mirroring what a pixel mask would catch. A single center
+    ray is too strict in clutter (chairs under tables, frame-edge objects
+    get occluded at their center); the 4 offset rays approximate
+    partial-mask visibility.
+
+    Once revealed, an object stays revealed until :meth:`reset` (called per
+    episode, matching the online accumulator's lifetime).
+    """
+
+    def __init__(
+        self,
+        obj_pos: np.ndarray,
+        task_ids: np.ndarray,
+        radii: np.ndarray,
+        hfov_deg: float,
+        aspect_hw: float,
+        min_dist: float,
+        max_dist: float,
+        min_angular_size: float,
+        occlusion_margin: float,
+        cast_ray_fn,
+    ):
+        self.obj_pos = np.asarray(obj_pos, dtype=np.float64)
+        self.task_ids = np.asarray(task_ids, dtype=np.int64)
+        self.radii = np.asarray(radii, dtype=np.float64)
+        self._tan_half_h = np.tan(np.deg2rad(hfov_deg) / 2.0)
+        self._tan_half_v = self._tan_half_h * aspect_hw
+        self._min_dist = float(min_dist)
+        self._max_dist = float(max_dist)
+        self._min_angular_size = float(min_angular_size)
+        self._occlusion_margin = float(occlusion_margin)
+        self._cast_ray = cast_ray_fn
+        self.revealed = np.zeros(len(self.task_ids), dtype=bool)
+
+    def reset(self) -> None:
+        self.revealed[:] = False
+
+    def update(
+        self, cam_pos: np.ndarray, cam_rot: "np.quaternion"
+    ) -> List[int]:
+        """Reveal objects visible from the camera pose; returns new indices."""
+        hidden = np.nonzero(~self.revealed)[0]
+        if hidden.size == 0:
+            return []
+        cam_pos = np.asarray(cam_pos, dtype=np.float64)
+        R = quaternion.as_rotation_matrix(cam_rot)  # world <- camera
+        rel = self.obj_pos[hidden] - cam_pos
+        pts_cam = rel @ R
+        fwd = -pts_cam[:, 2]
+        dist = np.linalg.norm(rel, axis=1)
+        r = self.radii[hidden]
+        ok = (
+            (fwd > 0.0)
+            & (fwd + r >= self._min_dist)
+            & (fwd - r <= self._max_dist)
+            & (np.abs(pts_cam[:, 0]) - r <= fwd * self._tan_half_h)
+            & (np.abs(pts_cam[:, 1]) - r <= fwd * self._tan_half_v)
+            & (r >= dist * self._min_angular_size)
+        )
+        cam_right, cam_up = R[:, 0], R[:, 1]
+        new_ids: List[int] = []
+        for j in np.nonzero(ok)[0]:
+            idx = int(hidden[j])
+            radius = float(self.radii[idx])
+            margin = min(radius, self._occlusion_margin)
+            center = self.obj_pos[idx]
+            targets = (
+                center,
+                center + 0.5 * radius * cam_right,
+                center - 0.5 * radius * cam_right,
+                center + 0.5 * radius * cam_up,
+                center - 0.5 * radius * cam_up,
+            )
+            for target in targets:
+                to_target = target - cam_pos
+                d = float(np.linalg.norm(to_target))
+                hit = self._cast_ray(cam_pos, to_target / d, d)
+                if hit is None or hit >= d - margin:
+                    self.revealed[idx] = True
+                    new_ids.append(idx)
+                    break
+        return new_ids
+
+    def ego_snapshot(
+        self, agent_pos: np.ndarray, agent_rot: "np.quaternion"
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Revealed objects in agent-frame coordinates, ``_pack_ego``-ready."""
+        R = quaternion.as_rotation_matrix(agent_rot)
+        delta = self.obj_pos[self.revealed] - np.asarray(agent_pos, dtype=np.float64)
+        return (delta @ R).astype(np.float32), self.task_ids[self.revealed]
 
 
 def render_ego_cloud_topdown(

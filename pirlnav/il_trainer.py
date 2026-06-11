@@ -127,6 +127,16 @@ class ILEnvDDPTrainer(PPOTrainer):
         resume_state = load_resume_state(self.config)
         if resume_state is not None:
             self.config: Config = resume_state["config"]
+            # The resume config pins the original NUM_UPDATES, which would
+            # otherwise cap a resumed run at the old budget.  Honour an
+            # explicit override so the training horizon can be extended
+            # across a resume (e.g. 300M -> 500M env steps).  Only consulted
+            # on resume; fresh runs use NUM_UPDATES from the CLI/config.
+            override_updates = os.environ.get("PIRLNAV_OVERRIDE_NUM_UPDATES")
+            if override_updates is not None:
+                self.config.defrost()
+                self.config.NUM_UPDATES = int(override_updates)
+                self.config.freeze()
 
         if self.config.RL.DDPPO.force_distributed:
             self._is_distributed = True
@@ -426,6 +436,16 @@ class ILEnvDDPTrainer(PPOTrainer):
             self.running_episode_stats = requeue_stats["running_episode_stats"]
             self.window_episode_stats.update(
                 requeue_stats["window_episode_stats"]
+            )
+
+            # If the budget was extended on resume (NUM_UPDATES raised), the
+            # restored checkpoint-percent is on the old, smaller scale and is
+            # now well above the current progress fraction, which would block
+            # every subsequent checkpoint until the new end.  Clamp it to the
+            # current progress so the even-spacing cadence resumes from here.
+            # No-op when NUM_UPDATES is unchanged (stored value <= current).
+            self._last_checkpoint_percent = min(
+                self._last_checkpoint_percent, self.percent_done()
             )
 
         ppo_cfg = self.config.RL.PPO

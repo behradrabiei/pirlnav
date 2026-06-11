@@ -1,0 +1,55 @@
+# Full-MP3D online-DINOv2 (dino-only @ 252x252) IL experiment.
+#
+# Sibling of configs/experiments/il_objectnav_mp3d_dinov2.yaml; the only
+# differences are:
+#   - BASE_TASK_CONFIG_PATH points at the 21-cat full-MP3D task yaml
+#     (objectnav_mp3d_full.yaml: THDA 70k DATA_PATH + recomputed
+#     INFLECTION_COEF). The goal-embedding auto-grows 6 -> 21.
+#   - MAX_SCENE_REPEAT_STEPS lowered 50000 -> 5000 so each env worker cycles
+#     more often through the 56 demo scenes (more diversity per update,
+#     matching the object_cloud_full pattern).
+#   - Distinct TENSORBOARD_DIR / CHECKPOINT_FOLDER / EVAL_CKPT_PATH_DIR so
+#     1-scene runs and full runs do not clobber each other.
+#   - NUM_ENVIRONMENTS=8 / NUM_UPDATES=125000 / NUM_CHECKPOINTS=50 defaults
+#     in the spirit of the paper budget; override per-run via env vars in
+#     the launcher.
+BASE_TASK_CONFIG_PATH: "configs/tasks/objectnav_mp3d_full.yaml"
+CMD_TRAILING_OPTS: ["TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS", "5000"]
+ENV_NAME: "SimpleRLEnv"
+SIMULATOR_GPU_ID: 0
+TORCH_GPU_ID: 0
+VIDEO_OPTION: []
+TENSORBOARD_DIR: "tb_dinov2_full"
+VIDEO_DIR: "video_dir"
+TEST_EPISODE_COUNT: -1
+EVAL_CKPT_PATH_DIR: "data/new_checkpoints_dinov2_full"
+NUM_ENVIRONMENTS: 8
+CHECKPOINT_FOLDER: "data/new_checkpoints_dinov2_full"
+TRAINER_NAME: "pirlnav-il"
+SENSORS: ["RGB_SENSOR"]
+NUM_UPDATES: 125000
+LOG_INTERVAL: 10
+NUM_CHECKPOINTS: 50
+FORCE_TORCH_SINGLE_THREADED: True
+
+EVAL:
+  SPLIT: "train"
+
+IL:
+  POLICY:
+    name: "ObjectNavILMAEPolicy"
+
+RL:
+  SUCCESS_REWARD: 2.5
+  SLACK_REWARD: -1e-3
+
+POLICY:
+  CRITIC:
+    no_critic: True
+  RGB_ENCODER:
+    backbone: "dinov2_base"
+    pretrained_encoder: null
+    dinov2_model_name: "facebook/dinov2-base"
+    dinov2_resize_h: 252
+    dinov2_resize_w: 252
+    dinov2_output_dim: 768

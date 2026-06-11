@@ -1,0 +1,87 @@
+# Full-MP3D ObjectNav task config for online-DINOv2 + ORACLE-REVEAL object
+# cloud IL.
+#
+# Differences vs configs/tasks/objectnav_mp3d_object_cloud_full.yaml:
+#   - No DEPTH_SENSOR / SEMANTIC_SENSOR: the GT scene cloud is loaded from
+#     precomputed per-scene vertex centroids and revealed progressively via
+#     frustum + angular-size + cast_ray occlusion tests, so the env only
+#     renders RGB. The 4-GPU probes showed the extra render passes were the
+#     fps bottleneck (~390 vs ~1125 fps; see DELTAAI_CONTAINER.md).
+#   - HABITAT_SIM_V0.ENABLE_PHYSICS: True -- bullet builds the stage
+#     collision mesh that sim.cast_ray needs (without it raycasts silently
+#     return no hits; verified 2026-06-09).
+#   - EGO_OBJECT_CLOUD_SENSOR.ORACLE_REVEAL: True with reveal gates that
+#     mirror the old online pipeline (depth window 0.5-5.0 m, angular size
+#     ~= MIN_MASK_PIXELS=100 @ 640x480).
+# Dataset, actions, measurements and INFLECTION_COEF are unchanged.
+ENVIRONMENT:
+  MAX_EPISODE_STEPS: 500
+
+SIMULATOR:
+  FORWARD_STEP_SIZE: 0.25
+  TURN_ANGLE: 30
+  TILT_ANGLE: 30
+  ACTION_SPACE_CONFIG: "v1"
+  SCENE_DATASET: "data/scene_datasets/mp3d/mp3d.scene_dataset_config.json"
+  AGENT_0:
+    SENSORS: ['RGB_SENSOR']
+    HEIGHT: 0.88
+    RADIUS: 0.18
+  HABITAT_SIM_V0:
+    GPU_DEVICE_ID: 0
+    ALLOW_SLIDING: False
+    ENABLE_PHYSICS: True
+  RGB_SENSOR:
+    WIDTH: 640
+    HEIGHT: 480
+    HFOV: 79
+    POSITION: [0, 0.88, 0]
+
+TASK:
+  TYPE: ObjectNav-v2
+  POSSIBLE_ACTIONS: ["STOP", "MOVE_FORWARD", "TURN_LEFT", "TURN_RIGHT", "LOOK_UP", "LOOK_DOWN"]
+  SUCCESS_DISTANCE: 0.1
+
+  SENSORS: ['OBJECTGOAL_SENSOR', 'COMPASS_SENSOR', 'GPS_SENSOR', 'EGO_OBJECT_CLOUD_SENSOR']
+  GOAL_SENSOR_UUID: objectgoal
+
+  DEMONSTRATION_SENSOR:
+    TYPE: DemonstrationSensor
+  DEMONSTRATION_SENSOR_UUID: "next_actions"
+
+  INFLECTION_WEIGHT_SENSOR:
+    TYPE: InflectionWeightSensor
+    INFLECTION_COEF: 3.513870128085
+
+  INFLECTION_WEIGHT_SENSOR_UUID: "inflection_weight"
+
+  EGO_OBJECT_CLOUD_SENSOR:
+    TYPE: EgoObjectCloudSensor
+    MAX_OBJECTS: 300
+    ORACLE_REVEAL: True
+    # Vertex-based per-scene clouds (scripts/dump_ply_object_clouds.py):
+    # per-instance centroids of the *_semantic.ply mesh -- the geometry
+    # source of truth. Unlike the old online pipeline, these are immune to
+    # the 5m MAX_DEPTH clamp and to semantic-mesh holes that deposited
+    # phantom objects on occluders (per-frame probe, 2026-06-09).
+    CACHE_ROOT: "data/object_clouds_ply/mp3d"
+    REVEAL_MIN_DIST: 0.5
+    REVEAL_MAX_DIST: 5.0
+    REVEAL_MIN_ANGULAR_SIZE: 0.0145
+    REVEAL_OCCLUSION_MARGIN: 0.75
+  EGO_OBJECT_CLOUD_SENSOR_UUID: "ego_object_cloud"
+
+  MEASUREMENTS: ['DISTANCE_TO_GOAL', 'SUCCESS', 'SPL', 'SOFT_SPL', 'SPARSE_REWARD']
+
+  DISTANCE_TO_GOAL:
+    DISTANCE_TO: VIEW_POINTS
+
+  SUCCESS:
+    SUCCESS_DISTANCE: 0.1
+
+DATASET:
+  TYPE: ObjectNav-v2
+  SPLIT: train
+  DATA_PATH: "data/datasets/objectnav/objectnav_mp3d/objectnav_mp3d_thda_70k_21cat/{split}/{split}.json.gz"
+  SCENES_DIR: "data/scene_datasets/"
+  MAX_EPISODE_STEPS: 500

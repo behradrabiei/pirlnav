@@ -99,6 +99,20 @@ _TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR.MIN_MASK_PIXELS = 100
 # precomputed world-frame cloud from "<CACHE_ROOT>/<scene>/<scene>.npz"
 # (the layout written by dump_scene_object_clouds.py / teleop_object_cloud.py).
 _TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR.CACHE_ROOT = ""
+# Progressive-reveal oracle mode: hold the GT scene cloud (vertex-based npz
+# under CACHE_ROOT from scripts/dump_ply_object_clouds.py; cache-less
+# fallback = annotation AABB centers) and expose an object only after the
+# camera has plausibly seen it (range + frustum + angular size + cast_ray
+# occlusion).  No DEPTH/SEMANTIC rendering.  Requires
+# HABITAT_SIM_V0.ENABLE_PHYSICS = True.
+# REVEAL_MIN_ANGULAR_SIZE ~0.0145 rad matches the online MIN_MASK_PIXELS=100
+# @ 640x480 threshold; REVEAL_OCCLUSION_MARGIN caps the AABB-radius slack in
+# the ray test (metres) so big objects don't reveal through thin walls.
+_TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR.ORACLE_REVEAL = False
+_TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR.REVEAL_MIN_DIST = 0.5
+_TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR.REVEAL_MAX_DIST = 5.0
+_TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR.REVEAL_MIN_ANGULAR_SIZE = 0.0145
+_TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR.REVEAL_OCCLUSION_MARGIN = 0.75
 _TASK_CONFIG.TASK.EGO_OBJECT_CLOUD_SENSOR_UUID = "ego_object_cloud"
 
 _TASK_CONFIG.TASK.SIMPLE_REWARD = CN()

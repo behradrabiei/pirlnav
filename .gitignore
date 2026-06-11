@@ -19,6 +19,9 @@ data/
 # teleop output runs
 teleop_runs/
 
+# interactive probe / validation output
+probe_logs/
+
 # misc
 .DS_Store
 

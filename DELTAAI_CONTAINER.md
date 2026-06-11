@@ -340,6 +340,136 @@ saturate the GH200 GPU memory, raise it as the probe allows; if it
 overflows, drop to 4 and adjust `NUM_UPDATES` upward to keep the env-step
 budget on target.
 
+## Full MP3D Run (online DINOv2 @ 252 + online Object Cloud, 1-node x 4-GPU)
+
+A lighter sibling of the run above: online DINOv2 lowered to **252x252** (to
+match the dino-only full run) plus the online object cloud at
+**`MAX_OBJECTS=100`** with the original-size point transformer (d_model=64,
+2 layers; the enlarged one OOMs in the BC update at 40 envs -- see the note in
+the experiment yaml). The cheaper backbone
+lets the whole run fit on **one ghx4 node (4 GPUs)** at `NUM_ENVIRONMENTS=40`,
+targeting ~500M env steps via multi-job auto-resume, exactly like
+[scripts/slurm_train_pirlnav_deltaai_full_dinov2.sh](scripts/slurm_train_pirlnav_deltaai_full_dinov2.sh).
+
+- Experiment config: [configs/experiments/il_objectnav_mp3d_dinov2_object_cloud_full_252.yaml](configs/experiments/il_objectnav_mp3d_dinov2_object_cloud_full_252.yaml)
+- Single-node launcher (smoke / 40-env probe): [scripts/run_il_mp3d_full_dinov2_object_cloud_252.sh](scripts/run_il_mp3d_full_dinov2_object_cloud_252.sh)
+- 1-node x 4-GPU SLURM (/tmp staging, auto-resume): [scripts/slurm_train_pirlnav_deltaai_full_dinov2_object_cloud.sh](scripts/slurm_train_pirlnav_deltaai_full_dinov2_object_cloud.sh)
+
+Online RGB augmentation (`jitter+shift`) and pose replay
+(`IL.BehaviorCloning.REPLAY_MODE=poses`) are kept, matching the dino-only run.
+
+DEPTH/SEMANTIC render at **320x240** (RGB stays 640x480 for DINOv2), set via
+`CMD_TRAILING_OPTS` in the experiment yaml together with
+`MIN_MASK_PIXELS=25` (same fraction-of-frame threshold as 100 @ 640x480). The
+first 40-env probe was env-time bound (~20s/update vs ~1.7s dino-only) on the
+3-pass render + readback of 40 workers per GPU; a one-off resolution
+comparison showed the cloud loses nothing at 320x240 (100% object recall,
+0.5-2.3cm mean centroid drift over 3 scenes, 2026-06-09).
+
+### Verify semantic segmentation first
+
+The online cloud is only as good as the live `SEMANTIC_SENSOR`. Before the long
+run, sanity-check a few scenes headlessly inside the container:
+
+```bash
+python scripts/verify_semantic_segmentation.py --num-scenes 5
+```
+
+It asserts the semantic frame has many instances, that
+`build_instance_to_task_id(sim)` maps some to goal classes `[0, 20]`, that the
+packed `ego_object_cloud` accumulates non-padding rows, and that depth is
+unnormalized. Exit code is non-zero if any scene fails.
+
+Known artifacts of this online pipeline (per-frame probe, 2026-06-09; both
+fixed by the oracle-reveal variant below): (a) `DEPTH_SENSOR.MAX_DEPTH=5`
+clamps, so objects seen beyond 5m get deposited at exactly 5m along the view
+ray; (b) the semantic mesh has holes the render mesh does not, so instance
+ids bleed through walls and pick up the occluder's depth -- phantom objects
+meters from the real geometry.
+
+### 40-env interactive probe
+
+```bash
+salloc --account=bgon-dtai-gh --partition=ghx4-interactive \
+  --nodes=1 --gpus-per-node=4 --time=00:60:00
+# inside the alloc, in the container with the three bind flags:
+NUM_ENVIRONMENTS=40 NUM_UPDATES=30 \
+  bash scripts/run_il_mp3d_full_dinov2_object_cloud_252.sh
+# watch `nvidia-smi` in a second shell; if peak memory exceeds ~85%, drop to 32.
+```
+
+### Submitting the 4-GPU job
+
+```bash
+sbatch scripts/slurm_train_pirlnav_deltaai_full_dinov2_object_cloud.sh
+# resubmit with the same TAG to auto-resume until ~500M steps.
+```
+
+Defaults: `NUM_ENVIRONMENTS=40`, `NUM_UPDATES=54000`, `MAX_OBJECTS=100`. Semantic
+rendering + cloud accumulation lower fps vs the dino-only run, so expect more
+48h resubmissions. env-steps/update is unchanged by the cloud; if the probe
+forces fewer envs, bump updates to keep ~500M:
+`NUM_UPDATES ~= 500e6 / (NUM_ENVIRONMENTS * 231.6)` (40 -> 54000, 32 -> 67500).
+
+## Full MP3D Run (online DINOv2 @ 252 + ORACLE-REVEAL Object Cloud)
+
+The online variant above is GPU-render-bound at ~390 fps aggregate: env-time
+~178s vs pth-time ~62s per 10 updates at 40 envs/rank, invariant to
+depth/semantic resolution (320x240 probe), `num_mini_batch`, `MAX_OBJECTS`,
+CPU count, and env count (N=20 probe matched N=40 -- the per-GPU render queue
+is saturated by the 3-pass RGB+DEPTH+SEMANTIC rendering; probes 2026-06-09).
+
+This variant removes those render passes entirely: the GT scene cloud is held
+per scene and objects are revealed only after the camera has plausibly seen
+them (range 0.5-5m + frustum + angular-size analog of `MIN_MASK_PIXELS` +
+`sim.cast_ray` occlusion -- see `OracleRevealCloud` in
+[pirlnav/task/object_cloud.py](pirlnav/task/object_cloud.py)).
+The env renders RGB only, so throughput returns to the dino-only regime. The
+policy observation is unchanged. `HABITAT_SIM_V0.ENABLE_PHYSICS: True` is
+required (bullet raycasts silently return no hits otherwise).
+
+The scene clouds come from per-instance *vertex centroids* of the
+`*_semantic.ply` meshes, precomputed by
+[scripts/dump_ply_object_clouds.py](scripts/dump_ply_object_clouds.py) into
+`data/object_clouds_ply/mp3d/` (`EGO_OBJECT_CLOUD_SENSOR.CACHE_ROOT`; all 56
+train scenes dumped 2026-06-09, ~25s/scene CPU-only, ~10KB/scene). The ply
+mesh is the geometry source of truth, so these positions carry neither of
+the online pipeline's artifacts (5m depth clamp, semantic-mesh-hole
+phantoms -- see above). When `compare_reveal_vs_online.py` reports reveal
+"misses", diagnose them against the vertex-cache positions first: every miss
+investigated in the 13-scene survey turned out to be an online artifact (a
+phantom or clamp-displaced entry), not a reveal-gate failure.
+
+Validation status (2026-06-09): reveal-vs-online matched objects show
+median reveal-timing delta of 0 steps and centroid deltas consistent with
+surface-vs-center geometry; the 4-GPU 40-env/rank probe sustained
+**1042-1132 fps aggregate** through 30 updates (env-time ~20s vs pth-time
+~50s per 10 updates -- learner-bound, same regime as dino-only, ~2.7x the
+online variant), no OOM.
+
+- Task config: [configs/tasks/objectnav_mp3d_oracle_reveal_full.yaml](configs/tasks/objectnav_mp3d_oracle_reveal_full.yaml)
+- Experiment config: [configs/experiments/il_objectnav_mp3d_dinov2_oracle_reveal_full_252.yaml](configs/experiments/il_objectnav_mp3d_dinov2_oracle_reveal_full_252.yaml)
+
+Validate before training (inside the container, GPU node):
+
+```bash
+# One-time, CPU-only (~25s/scene): vertex clouds for all scenes.
+python scripts/dump_ply_object_clouds.py
+# Watch the cloud build up during an expert replay (MP4 + final PNG):
+python scripts/visualize_oracle_reveal.py --scenes 17DRP5sb8fy
+# Quantify vs the online pipeline (recall, reveal timing, centroid deltas;
+# see the caveat in its docstring -- online is not ground truth):
+python scripts/compare_reveal_vs_online.py --num-scenes 3
+```
+
+Train by pointing the existing launchers at the new config:
+
+```bash
+CONFIG=configs/experiments/il_objectnav_mp3d_dinov2_oracle_reveal_full_252.yaml \
+TAG=mp3d_full_dinov2_oracle_reveal_252_4gpu_500M \
+  sbatch scripts/slurm_train_pirlnav_deltaai_full_dinov2_object_cloud.sh
+```
+
 ## Notes
 
 - Always use `apptainer exec --nv` for GPU access. Without `--nv`, the

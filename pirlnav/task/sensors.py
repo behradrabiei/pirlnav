@@ -13,7 +13,14 @@ from habitat.core.registry import registry
 from habitat.core.simulator import Observations, Sensor
 from habitat.sims.habitat_simulator.actions import HabitatSimActions
 
-from pirlnav.task.object_cloud import ObjectCloud, make_camera_intrinsics
+import habitat_sim
+
+from pirlnav.task.object_cloud import (
+    ObjectCloud,
+    OracleRevealCloud,
+    build_oracle_object_cloud,
+    make_camera_intrinsics,
+)
 from pirlnav.task.semantic_map import (
     NUM_CATEGORIES,
     NUM_CHANNELS,
@@ -437,6 +444,22 @@ class EgoObjectCloudSensor(Sensor):
       transforms it into the agent frame every step. Neither ``DEPTH_SENSOR``
       nor ``SEMANTIC_SENSOR`` agent-level rendering is needed; the policy
       sees the same observation as in online mode.
+
+    * ``ORACLE_REVEAL = True`` -- progressive-reveal mode (the production
+      path for render-free training). Holds the ground-truth scene cloud
+      and reveals objects only after the camera has plausibly seen them
+      (range + frustum + angular-size + ``sim.cast_ray`` occlusion; see
+      :class:`pirlnav.task.object_cloud.OracleRevealCloud`). Like cached
+      mode it needs no DEPTH/SEMANTIC rendering, but unlike it the agent
+      only ever observes objects from regions it has already looked at.
+      Requires ``SIMULATOR.HABITAT_SIM_V0.ENABLE_PHYSICS = True`` (bullet
+      raycasts silently return no hits otherwise). The camera pose is taken
+      from ``sensor_states["rgb"]`` and the FOV from ``RGB_SENSOR``.
+      ``CACHE_ROOT`` must point at the vertex-based per-scene npz files
+      written by ``scripts/dump_ply_object_clouds.py``; with an empty
+      ``CACHE_ROOT`` it falls back to live annotation AABB centers, which
+      is only suitable for ad-hoc probing (the mesh-derived centroids are
+      what the policy should see).
     """
 
     cls_uuid: str = "ego_object_cloud"
@@ -446,8 +469,23 @@ class EgoObjectCloudSensor(Sensor):
         self._max_objects = int(config.MAX_OBJECTS)
         self._min_mask_pixels = int(getattr(config, "MIN_MASK_PIXELS", 100))
         self._cache_root = str(getattr(config, "CACHE_ROOT", "") or "")
+        self._oracle_reveal = bool(getattr(config, "ORACLE_REVEAL", False))
 
-        if not self._cache_root:
+        if self._oracle_reveal:
+            rgb_cfg = sim.habitat_config.RGB_SENSOR
+            self._reveal_hfov = float(rgb_cfg.HFOV)
+            self._reveal_aspect_hw = float(rgb_cfg.HEIGHT) / float(rgb_cfg.WIDTH)
+            self._reveal_min_dist = float(getattr(config, "REVEAL_MIN_DIST", 0.5))
+            self._reveal_max_dist = float(getattr(config, "REVEAL_MAX_DIST", 5.0))
+            # Default ~ the online 100px @ 640x480 (HFOV 79) mask threshold:
+            # sqrt(100/pi) px / f_px = 5.64 / 388.2 ~= 0.0145 rad.
+            self._reveal_min_angular_size = float(
+                getattr(config, "REVEAL_MIN_ANGULAR_SIZE", 0.0145)
+            )
+            self._reveal_occlusion_margin = float(
+                getattr(config, "REVEAL_OCCLUSION_MARGIN", 0.75)
+            )
+        elif not self._cache_root:
             depth_cfg = sim.habitat_config.DEPTH_SENSOR
             self._fx, self._fy, self._cx, self._cy = make_camera_intrinsics(
                 int(depth_cfg.WIDTH), int(depth_cfg.HEIGHT), float(depth_cfg.HFOV)
@@ -456,6 +494,8 @@ class EgoObjectCloudSensor(Sensor):
             self._max_depth = float(depth_cfg.MAX_DEPTH)
 
         self._cloud: Optional[ObjectCloud] = None
+        self._reveal: Optional[OracleRevealCloud] = None
+        self._instance_ids: Optional[np.ndarray] = None
         self._instance_to_task: Optional[np.ndarray] = None
         self._cached_scene_id: Optional[str] = None
 
@@ -531,6 +571,62 @@ class EgoObjectCloudSensor(Sensor):
         packed[:n, 1:4] = pos
         return packed
 
+    def _cast_ray_dist(
+        self, origin: np.ndarray, direction: np.ndarray, max_dist: float
+    ) -> Optional[float]:
+        """First-hit distance along a normalized ray, or None for no hit."""
+        res = self._sim.cast_ray(habitat_sim.geo.Ray(origin, direction), max_dist)
+        return float(res.hits[0].ray_distance) if res.has_hits() else None
+
+    def _load_reveal_npz(self, scene_id_path: str) -> Dict[str, np.ndarray]:
+        """Vertex-based oracle cloud from ``<CACHE_ROOT>/<scene>/<scene>.npz``
+        (the layout written by ``scripts/dump_ply_object_clouds.py``)."""
+        scene_name = _scene_id_to_name(scene_id_path)
+        path = os.path.join(self._cache_root, scene_name, f"{scene_name}.npz")
+        if not os.path.isfile(path):
+            raise FileNotFoundError(
+                "EgoObjectCloudSensor (ORACLE_REVEAL): missing vertex cloud "
+                f"for scene={scene_name!r} at {path!r}. Run "
+                "`python scripts/dump_ply_object_clouds.py --output-dir "
+                f"{self._cache_root}` to populate it."
+            )
+        data = np.load(path)
+        required = ("obj_pos", "task_ids", "radii", "instance_ids")
+        if any(k not in data for k in required):
+            raise ValueError(
+                f"{path!r}: expected keys {required}; regenerate with "
+                "scripts/dump_ply_object_clouds.py (the AABB-based layout "
+                "from dump_scene_object_clouds.py lacks radii/instance_ids)."
+            )
+        task_ids = data["task_ids"]
+        if task_ids.size and (
+            task_ids.min() < 0 or task_ids.max() >= NUM_CATEGORIES
+        ):
+            raise ValueError(
+                f"{path!r}: task_ids out of range [0, {NUM_CATEGORIES - 1}]; "
+                f"saw [{int(task_ids.min())}, {int(task_ids.max())}]"
+            )
+        return {k: np.asarray(data[k]) for k in required}
+
+    def _make_reveal_cloud(self, scene_id_path: str) -> OracleRevealCloud:
+        if self._cache_root:
+            oracle = self._load_reveal_npz(scene_id_path)
+        else:
+            oracle = build_oracle_object_cloud(self._sim)
+        self._instance_ids = oracle["instance_ids"]
+        return OracleRevealCloud(
+            obj_pos=oracle["obj_pos"],
+            task_ids=oracle["task_ids"],
+            radii=oracle["radii"],
+            hfov_deg=self._reveal_hfov,
+            aspect_hw=self._reveal_aspect_hw,
+            min_dist=self._reveal_min_dist,
+            max_dist=self._reveal_max_dist,
+            min_angular_size=self._reveal_min_angular_size,
+            occlusion_margin=self._reveal_occlusion_margin,
+            cast_ray_fn=self._cast_ray_dist,
+        )
+
     def _get_observation(
         self,
         observations: Dict[str, Observations],
@@ -539,8 +635,22 @@ class EgoObjectCloudSensor(Sensor):
         **kwargs: Any,
     ) -> np.ndarray:
         agent_state = self._sim.get_agent_state()
-        agent_pos = np.asarray(agent_state.position, dtype=np.float32)
-        R = quaternion.as_rotation_matrix(agent_state.rotation).astype(np.float32)
+        agent_pos = np.asarray(agent_state.position, dtype=np.float64)
+
+        if self._oracle_reveal:
+            if self._reveal is None or episode.scene_id != self._cached_scene_id:
+                self._reveal = self._make_reveal_cloud(episode.scene_id)
+                self._cached_scene_id = episode.scene_id
+            elif task._is_resetting:
+                self._reveal.reset()
+            cam = agent_state.sensor_states["rgb"]
+            self._reveal.update(
+                np.asarray(cam.position, dtype=np.float64), cam.rotation
+            )
+            pos_ego, task_ids = self._reveal.ego_snapshot(
+                agent_pos=agent_pos, agent_rot=agent_state.rotation
+            )
+            return self._pack_ego(pos_ego, task_ids)
 
         if self._cache_root:
             if (
@@ -551,6 +661,7 @@ class EgoObjectCloudSensor(Sensor):
                 self._load_scene_cloud(episode.scene_id)
                 self._cached_scene_id = episode.scene_id
             assert self._world_obj_pos is not None  # mypy
+            R = quaternion.as_rotation_matrix(agent_state.rotation)
             pos_ego = (self._world_obj_pos - agent_pos) @ R
             return self._pack_ego(pos_ego, self._world_task_ids)
 
@@ -573,8 +684,7 @@ class EgoObjectCloudSensor(Sensor):
             depth_min=self._min_depth, depth_max=self._max_depth,
         )
         ego = self._cloud.to_ego_dict(
-            agent_pos=np.asarray(agent_state.position, dtype=np.float64),
-            agent_rot=agent_state.rotation,
+            agent_pos=agent_pos, agent_rot=agent_state.rotation
         )
         return self._pack_ego(ego["obj_pos"], ego["task_ids"])
 

@@ -1,0 +1,72 @@
+# Full-MP3D online-DINOv2 (@ 252x252) + ORACLE-REVEAL object-cloud IL.
+#
+# Sibling of il_objectnav_mp3d_dinov2_object_cloud_full_252.yaml that swaps
+# the online (depth+semantic rendered) cloud for the progressive-reveal
+# oracle cloud (configs/tasks/objectnav_mp3d_oracle_reveal_full.yaml): the GT
+# scene cloud comes from semantic annotations, and objects appear only after
+# the camera has plausibly seen them (frustum + size + raycast occlusion).
+# The policy observation (ego_object_cloud) is identical in shape/meaning, so
+# the encoder and trainer are unchanged.
+#
+# Why: the online variant is GPU-render-bound at ~390 fps (env-time ~178s vs
+# pth-time ~62s per 10 updates at 40 envs/rank) because of the 3-pass
+# RGB+DEPTH+SEMANTIC render. RGB-only rendering puts this variant back in the
+# dino-only regime (~1100 fps; see DELTAAI_CONTAINER.md).
+#
+# Kept from the online sibling: original-size OBJECT_CLOUD_ENCODER,
+# num_mini_batch=4 (the cloud encoder's (B, N, N, d) attention activations
+# OOM at nmb=2 with 40 envs and MAX_OBJECTS=100), jitter+shift RGB
+# augmentation, pose replay, MAX_SCENE_REPEAT_STEPS=5000. MAX_OBJECTS
+# defaults to 300 in the task config; launchers override it to 100.
+BASE_TASK_CONFIG_PATH: "configs/tasks/objectnav_mp3d_oracle_reveal_full.yaml"
+CMD_TRAILING_OPTS: ["TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS", "5000"]
+ENV_NAME: "SimpleRLEnv"
+SIMULATOR_GPU_ID: 0
+TORCH_GPU_ID: 0
+VIDEO_OPTION: []
+TENSORBOARD_DIR: "tb_dinov2_oracle_reveal_full_252"
+VIDEO_DIR: "video_dir"
+TEST_EPISODE_COUNT: -1
+EVAL_CKPT_PATH_DIR: "data/new_checkpoints_dinov2_oracle_reveal_full_252"
+NUM_ENVIRONMENTS: 8
+CHECKPOINT_FOLDER: "data/new_checkpoints_dinov2_oracle_reveal_full_252"
+TRAINER_NAME: "pirlnav-il"
+SENSORS: ["RGB_SENSOR"]
+NUM_UPDATES: 54000
+LOG_INTERVAL: 10
+NUM_CHECKPOINTS: 60
+FORCE_TORCH_SINGLE_THREADED: True
+
+EVAL:
+  SPLIT: "train"
+
+IL:
+  POLICY:
+    name: "ObjectNavILMAEPolicy"
+  BehaviorCloning:
+    num_mini_batch: 4
+
+RL:
+  SUCCESS_REWARD: 2.5
+  SLACK_REWARD: -1e-3
+
+POLICY:
+  CRITIC:
+    no_critic: True
+  RGB_ENCODER:
+    backbone: "dinov2_base"
+    pretrained_encoder: null
+    dinov2_model_name: "facebook/dinov2-base"
+    dinov2_resize_h: 252
+    dinov2_resize_w: 252
+    dinov2_output_dim: 768
+    use_augmentations: True
+    use_augmentations_test_time: True
+    augmentations_name: "jitter+shift"
+  OBJECT_CLOUD_ENCODER:
+    embedding_size: 32
+    num_classes: 21
+    d_model: 64
+    num_layers: 2
+    rpe_mode: "log_distance"
+    ffn_expansion: 2
