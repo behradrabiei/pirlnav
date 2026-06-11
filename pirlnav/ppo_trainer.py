@@ -12,7 +12,7 @@ import tqdm
 from gym import spaces
 from habitat import Config, logger
 from habitat.utils import profiling_wrapper
-from habitat.utils.render_wrapper import overlay_frame
+from habitat.utils.render_wrapper import append_text_to_image, overlay_frame
 from pirlnav.utils.utils import observations_to_image
 from habitat_baselines.common.baseline_registry import baseline_registry
 from habitat_baselines.common.obs_transformers import (
@@ -80,16 +80,26 @@ class PIRLNavPPOTrainer(PPOTrainer):
             or self.config.RL.DDPPO.pretrained
         ):
             pretrained_state = torch.load(
-                self.config.RL.DDPPO.pretrained_weights, map_location="cpu"
+                self.config.RL.DDPPO.pretrained_weights,
+                map_location="cpu",
+                weights_only=False,
             )
 
         if self.config.RL.DDPPO.pretrained:
-            self.actor_critic.load_state_dict(
-                {  # type: ignore
+            missing, unexpected = self.actor_critic.load_state_dict(
+                {
                     k[len("actor_critic.") :]: v
                     for k, v in pretrained_state["state_dict"].items()
-                }
+                },
+                strict=False,
             )
+            if missing:
+                logger.info(
+                    "Pretrained load skipped missing keys (expected for IL init): "
+                    f"{missing}"
+                )
+            if unexpected:
+                logger.warn(f"Pretrained load unexpected keys: {unexpected}")
         elif self.config.RL.DDPPO.pretrained_encoder:
             prefix = "actor_critic.net.visual_encoder."
             self.actor_critic.net.visual_encoder.load_state_dict(
@@ -639,6 +649,8 @@ class PIRLNavPPOTrainer(PPOTrainer):
 
         pbar = tqdm.tqdm(total=number_of_eval_episodes)
         self.actor_critic.eval()
+        infer_time_total = 0.0
+        infer_steps = 0
         while (
             len(stats_episodes) < number_of_eval_episodes
             and self.envs.num_envs > 0
@@ -646,6 +658,9 @@ class PIRLNavPPOTrainer(PPOTrainer):
             current_episodes = self.envs.current_episodes()
 
             with torch.no_grad():
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                _t_act = time.time()
                 (
                     _,
                     actions,
@@ -658,6 +673,10 @@ class PIRLNavPPOTrainer(PPOTrainer):
                     not_done_masks,
                     deterministic=False,
                 )
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                infer_time_total += time.time() - _t_act
+                infer_steps += self.envs.num_envs
 
                 prev_actions.copy_(actions)  # type: ignore
             # NB: Move actions to CPU.  If CUDA tensors are
@@ -729,6 +748,7 @@ class PIRLNavPPOTrainer(PPOTrainer):
                             video_dir=self.config.VIDEO_DIR,
                             images=rgb_frames[i],
                             episode_id=current_episodes[i].episode_id,
+                            scene_id=current_episodes[i].scene_id,
                             checkpoint_idx=checkpoint_index,
                             metrics=self._extract_scalars_from_info(infos[i]),
                             fps=self.config.VIDEO_FPS,
@@ -743,6 +763,13 @@ class PIRLNavPPOTrainer(PPOTrainer):
                     # TODO move normalization / channel changing out of the policy and undo it here
                     frame = observations_to_image(
                         {k: v[i] for k, v in batch.items()}, infos[i]
+                    )
+                    goal = (
+                        getattr(current_episodes[i], "object_category", None)
+                        or "unknown"
+                    )
+                    frame = append_text_to_image(
+                        frame, [f"Goal: {goal}"], font_size=0.6
                     )
                     if self.config.VIDEO_RENDER_ALL_INFO:
                         frame = overlay_frame(frame, infos[i])
@@ -776,6 +803,12 @@ class PIRLNavPPOTrainer(PPOTrainer):
                 sum(v[stat_key] for v in stats_episodes.values())
                 / num_episodes
             )
+
+        aggregated_stats["avg_inference_time_ms"] = (
+            (infer_time_total / max(infer_steps, 1)) * 1000.0
+        )
+        aggregated_stats["num_eval_episodes"] = float(num_episodes)
+        aggregated_stats["num_policy_steps"] = float(infer_steps)
 
         for k, v in aggregated_stats.items():
             logger.info(f"Average episode {k}: {v:.4f}")

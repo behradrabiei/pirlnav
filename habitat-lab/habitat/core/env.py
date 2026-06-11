@@ -91,11 +91,13 @@ class Env:
             self._setup_episode_iterator()
             self.current_episode = next(self.episode_iterator)
             self._config.defrost()
-            # Only overwrite SCENE_DATASET from the episode if the episode
-            # actually carries a non-empty value.  THDA-style demonstration
-            # bundles omit this field (attrs defaults it to ""), which would
-            # otherwise wipe out the SIMULATOR.SCENE_DATASET set in the YAML
-            # and crash habitat-sim with "Scene Dataset `` does not exist".
+            # Only let the episode override the scene-dataset config when it
+            # actually specifies one.  Raw ObjectNav datasets omit the field
+            # (ObjectGoalNavEpisode defaults it to ""), and clobbering the
+            # configured SIMULATOR.SCENE_DATASET with an empty string makes
+            # habitat-sim 0.2.5 abort.  Falling through keeps whatever the task
+            # config declares (e.g. the MP3D / HM3D scene_dataset_config), so
+            # the scene dataset is selected purely via config.
             if self.current_episode.scene_dataset_config:
                 self._config.SIMULATOR.SCENE_DATASET = (
                     self.current_episode.scene_dataset_config

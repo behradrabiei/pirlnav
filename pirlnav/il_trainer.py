@@ -17,7 +17,7 @@ import tqdm
 from gym import spaces
 from habitat import Config, logger
 from habitat.utils import profiling_wrapper
-from habitat.utils.render_wrapper import overlay_frame
+from habitat.utils.render_wrapper import append_text_to_image, overlay_frame
 from pirlnav.utils.utils import observations_to_image
 from habitat_baselines.common.baseline_registry import baseline_registry
 from habitat_baselines.common.obs_transformers import (
@@ -917,6 +917,7 @@ class ILEnvDDPTrainer(PPOTrainer):
                                 video_dir=self.config.VIDEO_DIR,
                                 images=rgb_frames[i],
                                 episode_id=current_episodes[i].episode_id,
+                                scene_id=current_episodes[i].scene_id,
                                 checkpoint_idx=checkpoint_index,
                                 metrics=self._extract_scalars_from_info(
                                     infos[i]
@@ -944,6 +945,13 @@ class ILEnvDDPTrainer(PPOTrainer):
                     if compass_pred_batch is not None and i < compass_pred_batch.shape[0]:
                         per_env_obs["compass_pred"] = compass_pred_batch[i]
                     frame = observations_to_image(per_env_obs, infos[i])
+                    goal = (
+                        getattr(current_episodes[i], "object_category", None)
+                        or "unknown"
+                    )
+                    frame = append_text_to_image(
+                        frame, [f"Goal: {goal}"], font_size=0.6
+                    )
                     if self.config.VIDEO_RENDER_ALL_INFO:
                         frame = overlay_frame(frame, infos[i])
 

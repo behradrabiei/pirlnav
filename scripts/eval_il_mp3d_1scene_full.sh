@@ -120,7 +120,7 @@ for SPLIT in ${EVAL_SPLITS}; do
   grab() {
     local key="$1"
     grep -E "Average episode ${key}:" "${LOG_FILE}" | tail -n1 \
-      | awk -F': ' '{print $NF}'
+      | awk -F': ' '{print $NF}' || true
   }
   SUCC=$(grab success)
   SPL=$(grab spl)

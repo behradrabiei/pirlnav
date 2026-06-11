@@ -341,6 +341,13 @@ def poll_checkpoint_folder(
     return None
 
 
+def _video_scene_tag(scene_id: Optional[str]) -> Optional[str]:
+    if not scene_id:
+        return None
+    tag = os.path.splitext(os.path.basename(str(scene_id)))[0]
+    return tag.replace(" ", "_")
+
+
 def generate_video(
     video_option: List[str],
     video_dir: Optional[str],
@@ -352,6 +359,7 @@ def generate_video(
     fps: int = 10,
     verbose: bool = True,
     keys_to_include_in_name: Optional[List[str]] = None,
+    scene_id: Optional[str] = None,
 ) -> None:
     r"""Generate video according to specified information.
 
@@ -389,9 +397,16 @@ def generate_video(
     for k in use_metrics_k:
         metric_strs.append(f"{k}={metrics[k]:.2f}")
 
-    video_name = f"episode={episode_id}-ckpt={checkpoint_idx}-" + "-".join(
-        metric_strs
-    )
+    scene_tag = _video_scene_tag(scene_id)
+    if scene_tag:
+        video_name = (
+            f"scene={scene_tag}-episode={episode_id}-ckpt={checkpoint_idx}-"
+            + "-".join(metric_strs)
+        )
+    else:
+        video_name = f"episode={episode_id}-ckpt={checkpoint_idx}-" + "-".join(
+            metric_strs
+        )
     if "disk" in video_option:
         assert video_dir is not None
         images_to_video(
